@@ -1,0 +1,8 @@
+(defn app ()
+  (def counter (ref 0))
+  (def incr (fn () (set! counter (+ 1 (! counter)))))
+  (div
+    (button 'Click' incr)
+    (div (! counter))))
+
+(render-into 'root' (app))

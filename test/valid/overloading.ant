@@ -1,0 +1,12 @@
+(defn foo ((x Number) (y Number))
+  (+ x y))
+
+(defn foo ((s String))
+  s)
+
+(defn foo ((r (struct ((x Number) (y Number)))))
+  'HERE')
+
+(foo
+  (foo (struct ((x (foo 1 2))
+                (y (foo 3 4))))))

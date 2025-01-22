@@ -1,0 +1,6 @@
+(library
+ (name emit)
+ (libraries ant sexplib)
+ (modules emit)
+ (preprocess
+  (pps ppx_sexp_conv ppx_deriving.std)))

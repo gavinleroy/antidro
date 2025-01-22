@@ -6,13 +6,30 @@
   };
   outputs = { self, flake-utils, opam-nix, nixpkgs }@inputs:
     # Don't forget to put the package name instead of `throw':
-    let package = throw "Put the package name here!";
+    let package = "antidro";
     in flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         on = opam-nix.lib.${system};
+        opamQuery = {
+          # Dev dependencies
+          utop = "*";
+          merlin = "*";
+          ocamlformat = "*";
+          # Build dependencies
+          ocaml-base-compiler = "*";
+          dune = "*";
+          alcotest = "*";
+          cmdliner = "*";
+          sexplib = "*";
+          # PPXS
+          ppx_deriving = "*";
+          ppx_sexp_conv = "*";
+        };
         scope =
-          on.buildOpamProject { } package ./. { ocaml-base-compiler = "*"; };
+          on.buildOpamProject' {
+            resolveArgs.dev = true;
+          } ./. opamQuery;
         overlay = final: prev:
           {
             # Your overrides go here
@@ -21,5 +38,21 @@
         legacyPackages = scope.overrideScope overlay;
 
         packages.default = self.legacyPackages.${system}.${package};
+
+        devShell = pkgs.mkShell {
+          buildInputs = with scope; [
+            ocaml
+            dune
+            utop
+            merlin
+            ocamlformat
+            alcotest
+            cmdliner
+            sexplib
+            ppx_deriving
+            ppx_sexp_conv
+            pkgs.jsbeautifier
+          ];
+        };
       });
 }

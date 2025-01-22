@@ -1,2 +1,11 @@
 (library
- (name antidro))
+ (name parse)
+ (modules parse)
+ (libraries sexplib)
+ (preprocess
+  (pps ppx_sexp_conv ppx_deriving.std)))
+
+(library
+ (name antidro)
+ (modules read antidro)
+ (libraries parse typeck elaborate ant emit))

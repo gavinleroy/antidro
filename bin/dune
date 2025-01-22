@@ -1,4 +1,4 @@
 (executable
- (public_name antidro)
+ (public_name antidroc)
  (name main)
- (libraries antidro))
+ (libraries antidro cmdliner))

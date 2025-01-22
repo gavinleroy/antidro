@@ -1,6 +1,16 @@
-# dune init proj antidro
+# dune exec antidroc -- test/simple/counter.ant
 # OCAMLPARAM: unset
-# Shared cache: enabled-except-user-rules
+# Shared cache: disabled
 # Shared cache location: /Users/gavinleroy/.cache/dune/db
 # Workspace root: /Users/gavinleroy/Dev/Misc/antidro
 # Auto-detected concurrency: 12
+# Dune context:
+#  { name = "default"
+#  ; kind = "default"
+#  ; profile = Dev
+#  ; merlin = true
+#  ; fdo_target_exe = None
+#  ; build_dir = In_build_dir "default"
+#  ; instrument_with = []
+#  }
+$ /nix/store/6mwqyrcbfnysp6axv4n6r77xwr0p1kjr-ocaml-base-compiler-5.2.1_rc1/bin/ocamlc.opt -config > /tmp/nix-shell.TgnbiG/dune_78b467_output

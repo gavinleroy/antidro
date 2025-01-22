@@ -1,2 +1,15 @@
+(copy_files# valid/*.*)
+
+(copy_files# simple/*.*)
+
 (test
- (name test_antidro))
+ (name test_parse)
+ (libraries antidro alcotest)
+ (deps
+  (glob_files valid/*.*)))
+
+(test
+ (name test_typeck)
+ (libraries antidro alcotest)
+ (deps
+  (glob_files simple/*.*)))
