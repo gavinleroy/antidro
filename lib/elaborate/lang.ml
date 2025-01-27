@@ -36,4 +36,4 @@ type expr =
   | SetE of Place.t * Identifier.t
 [@@deriving sexp, show]
 
-and program = {expr: expr; ty: ty; rhos: (Rho.t IdMap.t[@sexp.opaque] [@opaque])}
+and program = {expr: expr; ty: ty}

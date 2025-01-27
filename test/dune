@@ -13,3 +13,7 @@
  (libraries antidro alcotest)
  (deps
   (glob_files simple/*.*)))
+
+(test
+ (name test_ant)
+ (libraries antidro alcotest))

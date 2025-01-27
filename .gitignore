@@ -4,4 +4,5 @@
 tmp/
 
 _build/
+.direnv/
 _opam/

@@ -1,0 +1,13 @@
+;; Assume an exposed DOM signal `elapsed-seconds`
+
+(defn app ()
+  (def last-click (ref (freeze elapsed-seconds)))
+
+  (defn save-time ()
+    (set! last-click (freeze elapsed-seconds)))
+
+  (div
+    (span (- elapsed-seconds (! last-click)))
+    (button 'Reset' save-time)))
+
+(render-into 'root' (app))

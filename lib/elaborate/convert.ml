@@ -27,5 +27,4 @@ let rec convert_expr expr =
   | Typeck.LetE (bound, ty, e, body) ->
       LetE (bound, ty, convert_expr e, convert_expr body)
 
-let run (p : Typeck.program) : program =
-  {expr= convert_expr p.expr; ty= p.ty; rhos= p.rhos}
+let run (p : Typeck.program) : program = {expr= convert_expr p.expr; ty= p.ty}

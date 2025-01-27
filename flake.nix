@@ -22,9 +22,13 @@
           alcotest = "*";
           cmdliner = "*";
           sexplib = "*";
+          logs = "*";
+          fmt = "*";
+          mtime = "*";
           # PPXS
           ppx_deriving = "*";
           ppx_sexp_conv = "*";
+          ppx_hash = "*";
         };
         scope =
           on.buildOpamProject' {
@@ -49,8 +53,12 @@
             alcotest
             cmdliner
             sexplib
+            logs
+            fmt
+            mtime
             ppx_deriving
             ppx_sexp_conv
+            ppx_hash
             pkgs.jsbeautifier
           ];
         };

@@ -1,6 +1,7 @@
 (library
  (name elaborate)
  (libraries typeck sexplib)
- (modules elaborate lang convert effwrap antlib)
+ (modules ; elaborate lang convert antlib
+  )
  (preprocess
   (pps ppx_sexp_conv ppx_deriving.std)))

@@ -1,0 +1,7 @@
+(defn max-of ([a Array<Number>])
+  (def max (ref 0))
+  (for-each (fn ([i Number]) ;; Write<a[*], !max>
+    (if (< (! max) i)
+      (set! max i))) a)
+  ;; !max^{a}
+  (! max))
