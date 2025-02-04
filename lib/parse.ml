@@ -45,7 +45,7 @@ and expr =
   | BeginE of expr list
   | StructE of (symbol * expr) list
   | FnE of formals * body
-  | AppE of expr * expr list
+  | AppE of symbol * expr list
   | SetE of place * expr
   | RefE of expr
 [@@deriving sexp, show]
@@ -77,12 +77,28 @@ let parse_many_with :
         cont (List.rev acc, [])
     | sexp :: rest ->
         f sexp
-          (fun sexp _ -> cont (List.rev acc, sexp :: rest))
+          (fun sexp emsg ->
+            Logs.debug (fun m ->
+                m "parse_many_with halted on %a: %s" Sexp.pp_hum sexp emsg ) ;
+            cont (List.rev acc, sexp :: rest) )
           (fun parsed -> loop (parsed :: acc) rest)
   in
   loop [] sexps
 
-let rec parse_ty : ty parser =
+let rec parse_symbol : symbol parser =
+ fun sexp err cont ->
+  let open Sexp in
+  match sexp with Atom name -> cont name | _ -> err sexp "expected symbol"
+
+and parse_symbols : symbol list many_parser =
+ fun sexps err cont ->
+  parse_many_with sexps parse_symbol (function
+    | symbs, [] ->
+        cont symbs
+    | _, who :: _ ->
+        err who "expected end of symbols" )
+
+and parse_ty : ty parser =
  fun sexp err cont ->
   let open Sexp in
   match sexp with
@@ -255,9 +271,10 @@ and parse_expr : expr parser =
             parse_expr expr err (fun expr -> cont (SetE (place, expr))) )
     | List [Atom "ref"; expr] ->
         parse_expr expr err (fun expr -> cont (RefE expr))
-    | List (fn :: args) ->
-        parse_expr fn err (fun fn ->
-            parse_exprs args err (fun args -> cont (AppE (fn, args))) )
+    | List (f :: args) ->
+        Logs.debug (fun m -> m "Parsing %a as application" Sexp.pp_hum sexp) ;
+        parse_symbol f err (fun f ->
+            parse_exprs args err (fun args -> cont (AppE (f, args))) )
     | _ ->
         err sexp "expected expression"
   in
@@ -292,6 +309,12 @@ and parse_exprs : expr list many_parser =
 and parse_body : body many_parser =
  fun sexps err cont ->
   parse_many_with sexps parse_decl (fun (decls, rest) ->
+      Logs.debug (fun m ->
+          m "Parsed decls: %a@\nRemaining %a"
+            (Format.pp_print_list pp_decl)
+            decls
+            (Format.pp_print_list Sexp.pp_hum)
+            rest ) ;
       parse_exprs rest err (fun exprs -> cont (decls, BeginE exprs)) )
 
 let report_sexp_mismatch (sexp : Sexp.t) (expected : string) =

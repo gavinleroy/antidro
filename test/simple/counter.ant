@@ -2,7 +2,6 @@
   (def counter (ref 0))
   (defn incr ()
     (set! counter (+ 1 (! counter))))
-
   (div
     (button 'Click' incr)
     (div (! counter))))

@@ -1,11 +1,11 @@
 (library
  (name parse)
  (modules parse)
- (libraries sexplib)
+ (libraries sexplib logs)
  (preprocess
   (pps ppx_sexp_conv ppx_deriving.std)))
 
 (library
  (name antidro)
  (modules read antidro)
- (libraries parse typeck logs mtime mtime.clock))
+ (libraries parse typeck emit logs mtime mtime.clock))

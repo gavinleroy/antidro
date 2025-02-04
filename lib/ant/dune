@@ -1,6 +1,6 @@
 (library
  (name ant)
  (libraries sexplib logs)
- (modules ty dom std delta gamma rho util)
+ (modules ty std util)
  (preprocess
   (pps ppx_sexp_conv ppx_hash ppx_deriving.std)))

@@ -1,0 +1,25 @@
+(def count (ref 0))
+
+(defn add ((n Number))
+  (def prev (! count))
+  (set! count (+ prev n)))
+
+(def a 0)
+(def b 1)
+(def c 2)
+(def d 3)
+(def e 4)
+(def f 5)
+(def g 6)
+
+(add a)
+(add b)
+(add c)
+(add d)
+(add e)
+(add f)
+(add g)
+
+; !count ^ {a, b, c, d, e, f, g}
+
+(print (! count))

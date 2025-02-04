@@ -1,0 +1,11 @@
+(defn add ((x Number) (y Number))
+  (+ x y))
+
+(def a 0)
+(def b 1)
+(def c (add a b))
+(def d (add b c))
+(def e (add c d))
+(def f (add d e))
+(def g (add e f))
+(print g)

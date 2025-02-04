@@ -17,20 +17,8 @@ let stamp c = Logs.Tag.(empty |> add stamp_tag (Mtime_clock.count c))
 let reporter ppf =
   let report _src level ~over k msgf =
     let k _ = over () ; k () in
-    let with_stamp h tags k ppf fmt =
-      let stamp =
-        match tags with
-        | None ->
-            None
-        | Some tags ->
-            Logs.Tag.find stamp_tag tags
-      in
-      let dt =
-        match stamp with None -> 0. | Some s -> Mtime.Span.to_float_ns s
-      in
-      Format.kfprintf k ppf
-        ("%a[%0+4.0fus] @[" ^^ fmt ^^ "@]@.")
-        Logs.pp_header (level, h) dt
+    let with_stamp h _tags k ppf fmt =
+      Format.kfprintf k ppf ("%a @[" ^^ fmt ^^ "@]@.") Logs.pp_header (level, h)
     in
     msgf @@ fun ?header ?tags fmt -> with_stamp header tags k ppf fmt
   in
@@ -72,7 +60,7 @@ let compile ?(dump = false) ?(stop = `ASM) ~outfile file =
   |> stopif `Parse |> Typeck.run
   |> dumpit "TYPECK" Typeck.sexp_of_program
   |> stopif `Typeck
-  |> fun _ -> Printf.printf "RAN"
+  |> Emit.run ~out:(open_out outfile)
 (* |> Elaborate.run *)
 (* |> dumpit "ELABORATE" Elaborate.sexp_of_program *)
 (* |> stopif `Elaborate |> Ant.run *)

@@ -1,5 +1,6 @@
 open Ant.Ty
 open Ant.Util
+open Lang
 
 module Alpha = struct
   module M = Map.Make (String)
@@ -38,9 +39,10 @@ module Alpha = struct
 
   let initial =
     List.fold_left
-      (fun self -> function `Method (sym, id, _) -> insert sym id self)
-      empty
-      (Ant.Std.pervasives @ Ant.Dom.pervasives)
+      (fun self -> function
+        | `Method (sym, groupid, _) ->
+            insert sym groupid self )
+      empty AntStd.pervasives
 end
 
 module Gamma = struct
@@ -79,7 +81,9 @@ module Gamma = struct
       |> function Ok ty -> ty | Error _ -> Ty.new_method_group ()
     in
     let+ group = Ty.as_group gty in
-    assert (Signature.is ty) ;
+    if not (Signature.is ty) then (
+      Logs.err (fun m -> m "expected method signature %a" Ty.pp ty) ;
+      assert false ) ;
     let vars = M.add name gty self.vars |> M.add overloadid ty in
     let self = {self with vars} in
     let overloads =
@@ -96,13 +100,19 @@ module Gamma = struct
 
   let initial =
     List.fold_left
-      (fun self -> function
-        | `Method (_, sym, ty) ->
-            add_method sym ty self |> Result.unwrap |> snd
-        | _ ->
-            self )
-      empty
-      (Ant.Std.pervasives @ Ant.Dom.pervasives)
+      (fun (self : t) -> function
+        | `Method (_, groupid, overloads) ->
+            List.fold_left
+              (fun self (overloadid, ty, _) ->
+                add_method ~overloadid groupid ty self |> Result.unwrap |> snd
+                )
+              self overloads )
+      empty AntStd.pervasives
+
+  let is_primitive (pl : Place.t) : bool =
+    Place.get_id_base pl
+    |> Option.map (fun id -> M.find_opt id initial.vars |> Option.is_some)
+    |> Option.value ~default:false
 
   let as_single_overload (t : Ty.t) (self : t) : (Symbol.t * Ty.t, 'e) result =
     let open ResultMonad in
@@ -130,6 +140,5 @@ module Theta = struct
             insert id tycon self
         | _ ->
             self )
-      M.empty
-      (Ant.Std.types @ Ant.Dom.types)
+      M.empty AntStd.types
 end

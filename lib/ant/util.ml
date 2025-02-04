@@ -10,6 +10,23 @@ module ResultMonad = struct
   let error = Result.error
 end
 
+module OptionMonad = struct
+  let ( let* ) m f = Option.bind m f
+
+  let ( let+ ) m f = Option.map f m
+
+  let return = Option.some
+
+  let error = Option.none
+end
+
+module Format = struct
+  include Format
+
+  let pp_list ?(pp_sep = fun ppf () -> pp_print_string ppf ", ") fmt ppf ls =
+    pp_print_list ~pp_sep fmt ppf ls
+end
+
 module Result = struct
   include Result
 
@@ -18,6 +35,30 @@ end
 
 module List = struct
   include List
+
+  let fst2 (ls : ('a * 'b * 'c) list) : ('a * 'b) list =
+    List.map (fun (x, y, _) -> (x, y)) ls
+
+  let thrice (ls : ('a * 'b * 'c) list) : 'a list * 'b list * 'c list =
+    let rec loop ls acc1 acc2 acc3 =
+      match ls with
+      | [] ->
+          (List.rev acc1, List.rev acc2, List.rev acc3)
+      | (x, y, z) :: ls ->
+          loop ls (x :: acc1) (y :: acc2) (z :: acc3)
+    in
+    loop ls [] [] []
+
+  let of_four (ls : ('a * 'b * 'c * 'd) list) :
+      'a list * 'b list * 'c list * 'd list =
+    let rec loop ls acc1 acc2 acc3 acc4 =
+      match ls with
+      | [] ->
+          (List.rev acc1, List.rev acc2, List.rev acc3, List.rev acc4)
+      | (x, y, z, w) :: ls ->
+          loop ls (x :: acc1) (y :: acc2) (z :: acc3) (w :: acc4)
+    in
+    loop ls [] [] [] []
 
   let zip (l1 : 'a list) (l2 : 'b list) : (('a * 'b) list, 'e) result =
     let rec loop l1 l2 acc =

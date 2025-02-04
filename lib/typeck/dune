@@ -1,6 +1,6 @@
 (library
  (name typeck)
  (libraries parse ant sexplib)
- (modules typeck infer typeit lang env)
+ (modules typeck lang env simplify typeit update wrap)
  (preprocess
   (pps ppx_sexp_conv ppx_deriving.std)))

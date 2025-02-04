@@ -3,6 +3,8 @@
 *.log
 tmp/
 
+*.js
+
 _build/
 .direnv/
 _opam/
