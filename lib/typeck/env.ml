@@ -40,8 +40,9 @@ module Alpha = struct
   let initial =
     List.fold_left
       (fun self -> function
-        | `Method (sym, groupid, _) ->
-            insert sym groupid self )
+        | AntStd.MethodPrim {name; groupid= id; _}
+        | AntStd.FuncPrim {name; id; _} ->
+            insert name id self )
       empty AntStd.pervasives
 end
 
@@ -101,12 +102,14 @@ module Gamma = struct
   let initial =
     List.fold_left
       (fun (self : t) -> function
-        | `Method (_, groupid, overloads) ->
+        | AntStd.MethodPrim {groupid; overloads; _} ->
             List.fold_left
-              (fun self (overloadid, ty, _) ->
+              (fun self ({id= overloadid; ty; _} : AntStd.overload_data) ->
                 add_method ~overloadid groupid ty self |> Result.unwrap |> snd
                 )
-              self overloads )
+              self overloads
+        | AntStd.FuncPrim {id; ty; _} ->
+            insert id ty self )
       empty AntStd.pervasives
 
   let is_primitive (pl : Place.t) : bool =

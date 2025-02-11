@@ -68,8 +68,6 @@ and simplify_place (sa : Alpha.t) (place : Parse.place) (error : 'e -> expr)
     match pl with
     | Parse.VarP sym ->
         simplify_symbol sa sym error @@ fun id -> k (Place.baseid id)
-    | Parse.DerefP pl ->
-        inner_place pl @@ fun pl -> k (Place.deref pl)
     | Parse.SlotP (pl, sl) ->
         inner_place pl @@ fun pl -> k (Place.slot (Slot.of_string sl) pl)
     | Parse.ArefP (pl, name) -> (
@@ -88,9 +86,7 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
     (k : Symbol.t -> (expr -> expr) -> expr) : expr =
   let basic_ectx expr =
     let bound = Symbol.fresh () in
-    let ectx hole =
-      LetE {bound; ty= Ty.unknown; deps= Dependencies.empty; expr; body= hole}
-    in
+    let ectx hole = LetE {bound; ty= Ty.unknown; expr; body= hole} in
     k bound ectx
   in
   match expr with
@@ -125,7 +121,6 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
               LetE
                 { bound
                 ; ty= Ty.unknown
-                ; deps= Dependencies.empty
                 ; expr= StructE (List.rev_map (fun (s, e) -> (s, e)) acc)
                 ; body= hole }
             in
@@ -144,13 +139,7 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
       @@ fun id ectx ->
       let bound = Symbol.fresh () in
       let ectx hole =
-        LetE
-          { bound
-          ; ty= Ty.unknown
-          ; deps= Dependencies.empty
-          ; expr= SetE (pl, id)
-          ; body= hole }
-        |> ectx
+        LetE {bound; ty= Ty.unknown; expr= SetE (pl, id); body= hole} |> ectx
       in
       k bound ectx
   | Parse.RefE e ->
@@ -158,13 +147,15 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
       @@ fun id ectx ->
       let bound = Symbol.fresh () in
       let ectx hole =
-        LetE
-          { bound
-          ; ty= Ty.unknown
-          ; deps= Dependencies.empty
-          ; expr= RefE id
-          ; body= hole }
-        |> ectx
+        LetE {bound; ty= Ty.unknown; expr= RefE id; body= hole} |> ectx
+      in
+      k bound ectx
+  | Parse.DerefE e ->
+      simplify_expr sa e err
+      @@ fun id ectx ->
+      let bound = Symbol.fresh () in
+      let ectx hole =
+        LetE {bound; ty= Ty.unknown; expr= DerefE id; body= hole} |> ectx
       in
       k bound ectx
   | Parse.FnE (formals, body) ->
@@ -173,12 +164,7 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
       @@ fun formals body ->
       let bound = Symbol.fresh () in
       let ectx hole =
-        LetE
-          { bound
-          ; ty= Ty.unknown
-          ; deps= Dependencies.empty
-          ; expr= FnE (formals, body)
-          ; body= hole }
+        LetE {bound; ty= Ty.unknown; expr= FnE (formals, body); body= hole}
       in
       k bound ectx
   | Parse.AppE (s, ss) ->
@@ -191,7 +177,6 @@ and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
         LetE
           { bound
           ; ty= Ty.unknown
-          ; deps= Dependencies.empty
           ; expr= AppE {f= Place.baseid f; args= ss}
           ; body= hole }
         |> ectx
@@ -222,12 +207,7 @@ and simplify_def sa (name, expr) err (k : Alpha.t -> (expr -> expr) -> expr) =
   @@ fun id ectx ->
   let bound, sa = Alpha.insert' name sa in
   let ectx hole =
-    LetE
-      { bound
-      ; ty= Ty.unknown
-      ; deps= Dependencies.empty
-      ; expr= PlaceE (Place.baseid id)
-      ; body= hole }
+    LetE {bound; ty= Ty.unknown; expr= PlaceE (Place.baseid id); body= hole}
     |> ectx
   in
   k sa ectx

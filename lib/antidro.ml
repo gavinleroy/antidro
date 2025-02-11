@@ -37,8 +37,7 @@ let () =
   Logs.set_reporter (reporter log_reporter) ;
   Logs.set_level log_level
 
-let compile ?(dump = false) ?(stop = `ASM) ~outfile file =
-  ignore outfile ;
+let compile ?(dump = false) ?(stop = `Air) ~outfile file =
   let stopif variant prog =
     if variant = stop then exit 0 ;
     prog
@@ -59,12 +58,11 @@ let compile ?(dump = false) ?(stop = `ASM) ~outfile file =
   |> dumpit "PARSE" Parse.sexp_of_program
   |> stopif `Parse |> Typeck.run
   |> dumpit "TYPECK" Typeck.sexp_of_program
-  |> stopif `Typeck
-  |> Emit.run ~out:(open_out outfile)
-(* |> Elaborate.run *)
-(* |> dumpit "ELABORATE" Elaborate.sexp_of_program *)
-(* |> stopif `Elaborate |> Ant.run *)
-(* |> dumpit "ANT" Ant.sexp_of_program *)
-(* |> stopif `Ant *)
-(* |> Emit.run ~out:(open_out outfile) *)
-(* |> Emit.run ~out:Out_channel.stdout *)
+  |> stopif `Typeck |> Air.run
+  |> dumpit "AIR" Air.sexp_of_program
+  |> stopif `Air
+  |> fun program ->
+  Logs.debug (fun m -> m "Emitting program to %s" outfile) ;
+  Emit.run ~out:(open_out outfile) program ;
+  let out = Sys.command (Printf.sprintf "js-beautify -r %s" outfile) in
+  ignore out

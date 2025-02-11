@@ -9,9 +9,7 @@ let parse = make_flag "parse"
 
 let typeck = make_flag "typeck"
 
-let elaborate = make_flag "elaborate"
-
-let ant = make_flag "ant"
+let air = make_flag "air"
 
 let dump = make_flag ~doc:"Dump pass output to stderr" "dump"
 
@@ -30,21 +28,19 @@ let output_file file =
   let b = Filename.basename file |> Filename.chop_extension in
   b ^ ".js"
 
-let operation read parse typeck elaborate ant dump input =
+let operation read parse typeck air dump input =
   let outfile = output_file input in
   let stop =
     if read then `Read
     else if parse then `Parse
     else if typeck then `Typeck
-    else if elaborate then `Elaborate
-    else if ant then `Ant
+    else if air then `Air
     else `Asm
   in
   Antidro.compile ~dump ~stop ~outfile input
 
 let operation_t =
-  Term.(
-    const operation $ read $ parse $ typeck $ elaborate $ ant $ dump $ input_str )
+  Term.(const operation $ read $ parse $ typeck $ air $ dump $ input_str)
 
 let info =
   let doc = "Antidro: a concept" in

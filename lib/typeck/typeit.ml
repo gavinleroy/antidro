@@ -28,25 +28,26 @@ and typeit_place sv pl : (Place.t * Ty.t, 'e) result =
         return acc
     | adj :: rest -> (
       match adj with
-      | Place.DerefAdj ->
-          let inner = Ty.new_meta () in
-          let* () = Ty.unify acc (Ty.ref inner) in
-          loop inner rest
       | Place.SlotAdj slot ->
           let* slot_ty = Ty.lookup_slot slot acc in
           loop slot_ty rest
-      | Place.SplatAdj ->
-          failwith "NYI: splat adjustment"
-      | Place.OffAdj _n ->
-          failwith "NYI: offset adjustment"
-      | Place.DynOffAdj _n ->
-          failwith "NYI: dynamic offset adjustment" )
+      | Place.OffAdj _ ->
+          let inner = Ty.new_meta () in
+          let* () = Ty.unify acc (Ty.array inner) in
+          loop inner rest )
   in
   match Place.get_id_base pl with
   | Some id ->
       let* id, ty = typeit_symbol sv id in
-      let+ ty = loop ty (Place.get_adjustments pl) in
-      (Place.replace_inner (Place.baseid id) pl, ty)
+      let inner, rewrap =
+        match Ty.ref_inner_ty ty with
+        | Some inner ->
+            (inner, Ty.ref)
+        | None ->
+            (ty, fun x -> x)
+      in
+      let+ ty = loop inner (Place.get_adjustments pl) in
+      (Place.replace_inner (Place.baseid id) pl, rewrap ty)
   | None ->
       error
         (`Msg
@@ -87,7 +88,7 @@ and typeit_expr sv st = function
       let+ body, bodyty, bdeps, beffs =
         typeit_expr (Gamma.insert id ty sv) st body
       in
-      let expr = LetE {bound= id; ty; deps; expr; body} in
+      let expr = LetE {bound= id; ty; (* deps; *) expr; body} in
       let deps = Dependencies.purge id bdeps deps in
       let effs = Effects.remove id effs |> Effects.merge beffs in
       (expr, bodyty, deps, effs)
@@ -129,17 +130,21 @@ and typeit_expr sv st = function
       let* pl, plty = typeit_place sv pl in
       let* e, ety = typeit_symbol sv e in
       (* TODO: should we return the dependencies here too? *)
-      let effs = Effects.singleton (Eff.on (Place.deref pl) [Place.baseid e]) in
+      let effs = Effects.singleton (Eff.on pl [Place.baseid e]) in
       let* () = Ty.unify inner_ty ety in
       let+ () = Ty.unify refty plty in
       (SetE (pl, e), Ty.void, Dependencies.empty, effs)
   | RefE e ->
+      (* FIXME: after getting rid of the `DerefAdj` we put dependencies on the raw place *)
       let+ e, ty = typeit_symbol sv e in
-      let deps =
-        Dependencies.singleton
-          (Dep.on (Place.deref Place.hole) [Place.baseid e])
-      in
+      let deps = Dependencies.singleton (Dep.on Place.hole [Place.baseid e]) in
       (RefE e, Ty.ref ty, deps, Effects.empty)
+  | DerefE e ->
+      let inner_ty = Ty.new_meta () in
+      let* e, ty = typeit_symbol sv e in
+      let+ () = Ty.unify ty (Ty.ref inner_ty) in
+      let deps = Dependencies.singleton (Dep.on Place.hole [Place.baseid e]) in
+      (DerefE e, inner_ty, deps, Effects.empty)
   | FnE (formals, body) ->
       let+ s, body = typeit_func sv st formals body in
       (FnE (formals, body), Signature.to_ty s, Dependencies.empty, Effects.empty)
@@ -168,8 +173,6 @@ and typeit_expr sv st = function
       let+ () = Ty.unify fty raw_fun in
       Logs.debug (fun m -> m "I did it!") ;
       (AppE {f; args}, retty, deps, effs)
-  | InlineJSE _ ->
-      assert false
 
 and typeit_func ?(tempbind = fun _ g -> g) sv st (formals : formals) body =
   Logs.debug (fun m ->
@@ -204,14 +207,7 @@ and typeit_func ?(tempbind = fun _ g -> g) sv st (formals : formals) body =
   let* () = Ty.unify deps (DepsT bdeps) in
   let* () = Ty.unify effs (EffsT beffs) in
   Logs.debug (fun m -> m "Inferred signature ret %a %a" Ty.pp ret Ty.pp msig) ;
-  let msig =
-    Ty.generalize (Gamma.ty_subst sv)
-      (* HACK: the meta variables were not getting expanded for signatures, *)
-      (* causing them to generalize with type variables that weren't used. *)
-      (* Forcing a substitution with the empty map is one way to expand the meta vars, *)
-      (* though it **SHOULDN'T** be necessary. Come back to this... *)
-      (Ty.subst TyMap.empty msig)
-  in
+  let msig = Ty.generalize (Gamma.ty_subst sv) msig in
   let+ sg = Signature.from_ty msig in
   (sg, body)
 
@@ -223,8 +219,6 @@ let run (prog : program) : program =
   let run_inner () =
     let* body, ty, deps, effs = typeit_expr Gamma.initial Theta.initial prog in
     ignore (deps, effs) ;
-    (* TODO *)
-    (* let* () = Dependencies.assert_empty deps in *)
     let+ () = Ty.unify Ty.void ty in
     body
   in

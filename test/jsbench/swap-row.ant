@@ -1,14 +1,13 @@
 (defn app ()
-  (def data (ref (fill-array 1000 (fn ((i Number))
-                                    (number-to-string i)))))
+  (def data (ref (fill-array to-string 1000)))
   (defn swap ()
     (def tmp (! (aref data 1)))
     (set! (aref data 1) (! (aref data 998)))
     (set! (aref data 998) tmp))
 
   (div
-    (button "Click" swap)
+    (button 'Click' swap)
     (map (fn ((s String))
            (div s)) (! data))))
 
-(render "root" (app))
+(render 'root' (app))

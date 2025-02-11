@@ -8,4 +8,4 @@
 (library
  (name antidro)
  (modules read antidro)
- (libraries parse typeck emit logs mtime mtime.clock))
+ (libraries parse typeck air emit logs mtime mtime.clock))

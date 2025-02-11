@@ -73,8 +73,6 @@ module SymbolMap = Map.Make (Symbol)
 module Slot : sig
   type t [@@deriving sexp_of, show, eq, ord, hash]
 
-  val box_value : t
-
   val return : t
 
   val broadcast : t
@@ -95,11 +93,9 @@ end = struct
 
   let to_string s = s
 
-  let box_value = of_string "value"
-
   let broadcast = of_string "broadcast"
 
-  let return = of_string "retval"
+  let return = of_string "ret"
 
   let children = of_string "children"
 
@@ -109,12 +105,10 @@ end = struct
 end
 
 module Place = struct
-  type adjustment =
-    | SplatAdj
-    | DerefAdj
-    | SlotAdj of Slot.t
-    | OffAdj of int
-    | DynOffAdj of Symbol.t
+  type index = LitI of int | DynI of Symbol.t | SplatI
+  [@@deriving sexp_of, eq, ord, hash]
+
+  type adjustment = SlotAdj of Slot.t | OffAdj of index
   [@@deriving sexp_of, eq, ord, hash]
 
   type base = HoleB | ResultB | VarB of Symbol.t
@@ -134,16 +128,14 @@ module Place = struct
         Symbol.pp fmt id
 
   let pp_adj fmt = function
-    | DerefAdj ->
-        Format.fprintf fmt ".%a" Slot.pp Slot.box_value
     | SlotAdj s ->
         Format.fprintf fmt ".%a" Slot.pp s
-    | OffAdj n ->
+    | OffAdj (LitI n) ->
         Format.fprintf fmt "[%d]" n
-    | DynOffAdj id ->
+    | OffAdj (DynI id) ->
         Format.fprintf fmt "[%a]" Symbol.pp id
-    | _ ->
-        ()
+    | OffAdj SplatI ->
+        Format.fprintf fmt "[*]"
 
   let pp fmt (base, adjs) =
     Format.fprintf fmt "%a%a" pp_base base
@@ -191,26 +183,17 @@ module Place = struct
   let swap_id ((f, pl') : Symbol.t * t) (pl : t) : t =
     if has_id_base f pl then replace_inner pl' pl else pl
 
-  let deref_to_slot ((base, adjs) : t) : t =
-    ( base
-    , List.map (function DerefAdj -> SlotAdj Slot.box_value | oth -> oth) adjs
-    )
-
   let base (b : base) : t = (b, [])
 
   let baseid (id : Symbol.t) : t = base (VarB id)
 
   let adj ((base, adjs) : t) (adj : adjustment) = (base, adj :: adjs)
 
-  let deref pl = adj pl DerefAdj
-
-  let derefid id = deref (baseid id)
-
-  let offset (n : int) (pl : t) : t = adj pl (OffAdj n)
+  let offset (n : int) (pl : t) : t = adj pl (OffAdj (LitI n))
 
   let offsetid (n : int) (id : Symbol.t) : t = offset n (baseid id)
 
-  let dynoffset (id : Symbol.t) (pl : t) : t = adj pl (DynOffAdj id)
+  let dynoffset (id : Symbol.t) (pl : t) : t = adj pl (OffAdj (DynI id))
 
   let slot (sl : Slot.t) (pl : t) : t = adj pl (SlotAdj sl)
 
@@ -226,19 +209,19 @@ module Place = struct
       | VarB id ->
           Symbol.to_string id
     in
+    let index_str = function
+      | LitI n ->
+          string_of_int n
+      | DynI id ->
+          Symbol.to_string id
+      | SplatI ->
+          "splat"
+    in
     let adjs_str =
       List.rev_map
         (function
-          | SplatAdj ->
-              "splat"
-          | DerefAdj ->
-              "deref"
-          | SlotAdj sl ->
-              Slot.to_string sl
-          | OffAdj n ->
-              "off_" ^ string_of_int n
-          | DynOffAdj id ->
-              "dynoff_" ^ Symbol.to_string id )
+          | SlotAdj sl -> Slot.to_string sl | OffAdj i -> "off_" ^ index_str i
+          )
         adjs
     in
     String.concat "_" ("updater" :: base_str :: adjs_str)
@@ -517,6 +500,8 @@ module Ty = struct
 
   let ref (t : t) : t = AppT (RefC, [t])
 
+  let ref_inner_ty = function AppT (RefC, [t]) -> Some t | _ -> None
+
   let array (t : t) : t = AppT (ArrayC, [t])
 
   let struct_ (fields : (Slot.t * t) list) : t =
@@ -737,6 +722,7 @@ module Ty = struct
         []
 
   let generalize (s : ssubst) (t : t) : t =
+    let t = subst TyMap.empty t in
     Logs.debug (fun m -> m "generalizing %a" pp t) ;
     let metas =
       meta_vars_in t

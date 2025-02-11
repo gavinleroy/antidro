@@ -10,8 +10,8 @@ let dependency_graph (expr : expr) : Dependencies.t =
         Dependencies.empty
     | IfE (t, c, a) ->
         Dependencies.(loop t @ loop c @ loop a)
-    | LetE {deps; body; _} ->
-        Dependencies.(deps @ loop body)
+    | LetE {body; _} ->
+        loop body
     | LabelE {body; _} ->
         loop body
   in
@@ -114,28 +114,24 @@ and update_expr expr =
   | LabelE self ->
       LabelE
         {self with fbody= update_expr self.fbody; body= update_expr self.body}
-  | LetE {bound; ty; deps; expr= SetE (pl, id); body} ->
+  | LetE {bound; ty; (* deps; *) expr= SetE (pl, id); body} ->
+      let deps = Dependencies.empty in
+      (* FIXME *)
       let pl = update_place pl in
       let deps = Dependencies.adjust update_place deps in
       LetE
         { bound
-        ; ty
-        ; deps
+        ; ty (* ; deps *)
         ; expr= SetE (Place.slot Slot.box_value pl, id)
         ; body=
             LetE
               { bound= Symbol.fresh ()
-              ; ty= Ty.void
-              ; deps= Dependencies.empty
+              ; ty= Ty.void (* ; deps= Dependencies.empty *)
               ; expr= AppE {f= Place.slot Slot.broadcast pl; args= []}
               ; body= update_expr body } }
-  | LetE
-      { bound
-      ; ty
-      ; deps
-      ; expr= RefE id
-      ; body= LetE {bound= actually_bound; body; _} } ->
-      let deps = Dependencies.adjust update_place deps in
+  | LetE {bound; ty; expr= RefE id; body= LetE {bound= actually_bound; body; _}}
+    ->
+      (* let deps = Dependencies.adjust update_place deps in *)
       let body = update_expr body in
       let broadcast_bound = Symbol.fresh () in
       (* TODO: find all dependents of the value *)
@@ -155,14 +151,12 @@ and update_expr expr =
             in
             LetE
               { bound
-              ; ty= Ty.void
-              ; deps= Dependencies.empty
+              ; ty= Ty.void (* ; deps= Dependencies.empty *)
               ; expr= PlaceE pl
               ; body=
                   LetE
                     { bound= Symbol.fresh ()
-                    ; ty= Ty.void
-                    ; deps= Dependencies.empty
+                    ; ty= Ty.void (* ; deps= Dependencies.empty *)
                     ; expr
                     ; body } } )
           to_update VoidE
@@ -175,14 +169,12 @@ and update_expr expr =
       Logs.debug (fun m -> m "Updating body with %a" pp_expr updater_body) ;
       LetE
         { bound= broadcast_bound
-        ; ty= Ty.void
-        ; deps= Dependencies.empty
+        ; ty= Ty.void (* ; deps= Dependencies.empty *)
         ; expr= FnE ([], updater_body)
         ; body=
             LetE
               { bound= actually_bound
-              ; ty
-              ; deps
+              ; ty (* ; deps *)
               ; expr=
                   StructE
                     [(Slot.box_value, id); (Slot.broadcast, broadcast_bound)]
@@ -193,10 +185,11 @@ and update_expr expr =
       FnE (sg, update_expr body)
   (* IFF the RHS of the let is an application, then we expand out the *)
   (* return bindings to accommodate all returned inner updating functions *)
-  | LetE {bound= id; ty; deps; expr= AppE data; body} ->
+  | LetE {bound= id; ty; (* deps; *) expr= AppE data; body} ->
       Logs.debug (fun m -> m "Rewriting let binding for %a" Symbol.pp id) ;
       let (AppE data) = update_expr (AppE data) [@@warning "-8"] in
-      let deps = Dependencies.adjust update_place deps in
+      (* let deps = Dependencies.adjust update_place deps in *)
+      let deps = Dependencies.empty in
       let body = update_expr body in
       let body =
         match body with
@@ -225,36 +218,37 @@ and update_expr expr =
             let slot = Place.to_updater_slot pl in
             LetE
               { bound= id
-              ; ty
-              ; deps= Dependencies.empty
+              ; ty (* ; deps= Dependencies.empty *)
               ; expr= PlaceE (Place.slot slot struct_pl)
               ; body } )
           binding_fields body
       in
       LetE
         { bound= struct_id
-        ; ty= new_ty
-        ; deps= Dependencies.empty
+        ; ty= new_ty (* ; deps= Dependencies.empty *)
         ; expr= AppE data
         ; body=
             LetE
               { bound= id
-              ; ty
-              ; deps
+              ; ty (* ; deps *)
               ; expr= PlaceE (Place.slot Slot.return struct_pl)
               ; body= body_with_updaters } }
   (* IFF the BODY of the let is a place, and that place is the *)
   (* immediately bound variable, then this is the return *)
-  | LetE {bound; ty; deps; expr; body= PlaceE pl} ->
+  | LetE {bound; ty; (* deps; *) expr; body= PlaceE pl} ->
       let expr = update_expr expr in
+      let deps = Dependencies.empty in
+      (* FIXME *)
       let deps = Dependencies.adjust update_place deps in
       let body = Place.get_id_base pl |> Option.get in
       let structty = Ty.struct_ [(Slot.return, ty)] in
       let structe = StructE [(Slot.return, body)] in
-      LetE {bound; ty= structty; deps; expr; body= structe}
-  | LetE {bound; ty; deps; expr; body} ->
+      LetE {bound; ty= structty; (* deps; *) expr; body= structe}
+  | LetE {bound; ty; (* deps; *) expr; body} ->
+      let deps = Dependencies.empty in
       let deps = Dependencies.adjust update_place deps in
-      LetE {bound; ty; deps; expr= update_expr expr; body= update_expr body}
+      LetE
+        {bound; ty; (* deps; *) expr= update_expr expr; body= update_expr body}
   | RefE _ | SetE _ | InlineJSE _ ->
       assert false
 

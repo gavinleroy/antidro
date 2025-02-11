@@ -26,11 +26,7 @@ and ty =
   | FnT of formals * ty * dep list * eff list
 [@@deriving sexp, show]
 
-and place =
-  | VarP of symbol
-  | DerefP of place
-  | SlotP of place * symbol
-  | ArefP of place * symbol
+and place = VarP of symbol | SlotP of place * symbol | ArefP of place * symbol
 [@@deriving sexp, show]
 
 and body = decl list * expr [@@deriving sexp, show]
@@ -48,6 +44,7 @@ and expr =
   | AppE of symbol * expr list
   | SetE of place * expr
   | RefE of expr
+  | DerefE of expr
 [@@deriving sexp, show]
 
 and program = body [@@deriving sexp, show]
@@ -193,8 +190,6 @@ and parse_place : place parser =
   match sexp with
   | Atom name ->
       cont (VarP name)
-  | List [Atom "!"; place] ->
-      parse_place place err (fun place -> cont (DerefP place))
   | List [Atom "slot"; place; Atom name] ->
       parse_place place err (fun place -> cont (SlotP (place, name)))
   | List [Atom "aref"; place; Atom name] ->
@@ -242,6 +237,8 @@ and parse_expr : expr parser =
   let open Sexp in
   let parse_complex_expr _ _ =
     match sexp with
+    | List [Atom "!"; place] ->
+        parse_place place err (fun place -> cont (DerefE (PlaceE place)))
     | List [Atom "if"; test; consequent; alternate] ->
         parse_expr test err (fun test ->
             parse_expr consequent err (fun consequent ->

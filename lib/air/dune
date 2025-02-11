@@ -1,0 +1,6 @@
+(library
+ (name air)
+ (libraries typeck sexplib)
+ (modules air ir lang wrap)
+ (preprocess
+  (pps ppx_sexp_conv ppx_deriving.std)))
