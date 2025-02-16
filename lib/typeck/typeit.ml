@@ -37,10 +37,10 @@ and typeit_place sv pl : (Place.t * Ty.t, 'e) result =
           loop inner rest )
   in
   match Place.get_id_base pl with
-  | Some id ->
+  | Ok id ->
       let* id, ty = typeit_symbol sv id in
       let inner, rewrap =
-        match Ty.ref_inner_ty ty with
+        match Ty.as_ref_inner_ty ty with
         | Some inner ->
             (inner, Ty.ref)
         | None ->
@@ -48,11 +48,8 @@ and typeit_place sv pl : (Place.t * Ty.t, 'e) result =
       in
       let+ ty = loop inner (Place.get_adjustments pl) in
       (Place.replace_inner (Place.baseid id) pl, rewrap ty)
-  | None ->
-      error
-        (`Msg
-          (Format.asprintf "not a concrete place, cannot type: %a" Place.pp pl)
-          )
+  | Error _ ->
+      Result.error "not a concrete place, cannot type: %a" Place.pp pl
 
 and typeit_expr sv st = function
   | VoidE ->
@@ -179,8 +176,8 @@ and typeit_func ?(tempbind = fun _ g -> g) sv st (formals : formals) body =
       m "typeit_func: @[(%a)%a@]"
         (Format.pp_print_list (fun fmt (id, ty) ->
              Format.fprintf fmt "%a: %a" Symbol.pp id Ty.pp ty ) )
-        formals pp_program body ) ;
-  (* Get a meta version of the signature  *)
+        formals pp_expr body ) ;
+  (* Build a meta version of the signature  *)
   let tys = List.map snd formals in
   let mtys = List.map (fun _ -> Ty.new_meta ()) tys in
   let mret = Ty.new_meta () in
@@ -197,30 +194,28 @@ and typeit_func ?(tempbind = fun _ g -> g) sv st (formals : formals) body =
   (* after. *)
   let sv = tempbind (PolyT ([], msig)) sv in
   let* body, ret, bdeps, beffs = typeit_expr sv st body in
-  Logs.debug (fun m -> m "Unifying %a %a" Ty.pp mret Ty.pp ret) ;
   let* () = Ty.unify mret ret in
   (* TODO: we need to pack the dependencies for signature use. This *)
   (* means the holes are plugged with the `resultb` value, but it *)
   (* also means that for each inner `ref` that's leaked, an existential *)
   (* is introduced. *)
-  let bdeps = Dependencies.adjust_lhs (Place.plug Place.result) bdeps in
-  let* () = Ty.unify deps (DepsT bdeps) in
-  let* () = Ty.unify effs (EffsT beffs) in
+  let bdeps = Dependencies.adjust_lhs (Place.plug Place.return) bdeps in
+  let* () = Ty.unify deps (Dependencies.to_ty bdeps) in
+  let* () = Ty.unify effs (Effects.to_ty beffs) in
   Logs.debug (fun m -> m "Inferred signature ret %a %a" Ty.pp ret Ty.pp msig) ;
   let msig = Ty.generalize (Gamma.ty_subst sv) msig in
   let+ sg = Signature.from_ty msig in
   (sg, body)
 
-let report_type_error (`Msg str) =
-  Format.eprintf "Type error: %s@." str ;
+let report_type_error err =
+  Format.eprintf "Type error: @[<v 0>%a@]@." Error.pp err ;
   exit 1
 
 let run (prog : program) : program =
-  let run_inner () =
-    let* body, ty, deps, effs = typeit_expr Gamma.initial Theta.initial prog in
-    ignore (deps, effs) ;
-    let+ () = Ty.unify Ty.void ty in
+  let run () : (program, Error.t) result =
+    let+ body, _ty, _deps, _effs =
+      typeit_expr Gamma.initial Theta.initial prog
+    in
     body
   in
-  run_inner ()
-  |> function Ok body -> body | Error err -> report_type_error err
+  run () |> function Ok prog -> prog | Error err -> report_type_error err

@@ -12,7 +12,11 @@ module Shared = struct
 end
 
 let nth_child' : int -> Place.t =
- fun n -> Place.result |> Place.slot Slot.children |> Place.offset n
+ fun n -> Place.return |> Place.slot Slot.children |> Place.offset n
+
+let no_effs = Effects.to_ty Effects.empty
+
+let no_deps = Dependencies.to_ty Dependencies.empty
 
 module Base = struct
   include Shared
@@ -59,12 +63,12 @@ module Base = struct
       ; groupid= Symbol.var "to_stringpr__"
       ; overloads= [ { id= to_string_n
                      ; ty= Ty.arrow
-                             ~effs:(Ty.effects Effects.empty)
-                             ~deps:(Ty.dependencies (Dependencies.of_list [Dep.on Place.result [Place.baseid x]]))
+                             ~effs:no_effs
+                             ~deps:(Dependencies.to_ty (Dependencies.of_list [Dep.on Place.return [Place.baseid x]]))
                              [(x, Ty.number)]
                              Ty.string
                      ; impl= Format.asprintf
-                               "return { %a: %a.toString() };"
+                               "return { %a: { value: %a.toString() } };"
                                Slot.pp Slot.return
                                Symbol.pp x
                      } ]}
@@ -77,9 +81,11 @@ module Base = struct
         ; groupid= Symbol.var "pluspr__"
         ; overloads= [ { id= plus_n_n
                        ; ty= Ty.arrow
-                             ~deps:(DepsT (Dependencies.of_list [Dep.on Place.result [Place.baseid x; Place.baseid y]]))
-                             ~effs:(Ty.effects Effects.empty)
-                             (List.combine [x; y] [Ty.number; Ty.number])
+                             ~deps:(Dependencies.to_ty (Dependencies.of_list [Dep.on Place.return [Place.baseid x; Place.baseid y]]))
+                             ~effs:no_effs
+                             [ x, Ty.number
+                             ; y, Ty.number
+                             ]
                              Ty.number
                        ; impl= Format.asprintf
                             (* FIXME *)
@@ -96,13 +102,15 @@ module Base = struct
     [ FuncPrim
         { name= "fill-array"
         ; id= fill_array
+        (* forall<T, R> *)
+        (*  (f: (n: Number, (i: Number) -> T | result^R)) -> Array<T> | result^n, result[*]^R *)
         ; ty= (let t = TyVar.fresh () and r = TyVar.fresh () and e = TyVar.fresh () in
                Ty.arrow
                  ~tyvars:[r; e; t]
-                 ~effs:(Ty.effects Effects.empty)
+                 ~effs:no_effs
                  (* result^{x,f} *)
-                 (* TODO: result[*]^r *)
-                 ~deps:(Ty.dependencies (Dependencies.of_list [Dep.on Place.result [Place.baseid x; Place.baseid f]]))
+                 (* TODO: result[*]^r <-- what is `r` exactly, it has a different scope than the inner `r` *)
+                 ~deps:no_deps (* FIXME *)
                  (List.combine
                     [f; x]
                     [ Ty.func
@@ -114,10 +122,12 @@ module Base = struct
                  (Ty.array (VarT t)))
         ; impl= Format.asprintf
               "let arr = []; \
-               for (let i = 0; i < %a; i++) { \
+               autorun(() => { \
+               arr = []; \
+               for (let i = 0; i < %a.value; i++) { \
                let el = %a(i).%a; \
                arr.push(el); \
-               } \
+               }}); \
                return { %a: arr }; \
               "
               Symbol.pp x
@@ -129,16 +139,15 @@ module Base = struct
         { name= "map"
         ; id= map
         ; ty= (let t = TyVar.fresh () and u = TyVar.fresh () and r = TyVar.fresh () in
-               (* TODO: allow dependency sets *)
                Ty.arrow
                  ~tyvars:[t; u; r]
-                 ~effs:(Ty.effects Effects.empty)
-                 ~deps:(Ty.dependencies Dependencies.empty)
+                 ~effs:no_effs
+                 ~deps:no_deps (* FIXME *)
                  (List.combine
                     [ f; x ]
                     [ Ty.func
                         ~deps:(VarT r)
-                        ~effs:(Ty.effects Effects.empty)
+                        ~effs:no_effs
                         [(y, VarT t)]
                         (VarT u)
                     ; Ty.array (VarT t)] )
@@ -152,7 +161,7 @@ module Base = struct
                 length: %a.length, \
               }), \
               ({ items }) => { \
-                mappedArray.replace(items.map((item, index) => %a(item, index))); \
+                mappedArray.replace(items.map((item, index) => %a(item, index).%a)); \
               }, \
               { fireImmediately: true } \
             ); \
@@ -161,6 +170,7 @@ module Base = struct
             Symbol.pp x
             Symbol.pp x
             Symbol.pp f
+            Slot.pp Slot.return
             Slot.pp Slot.return
         }
 
@@ -173,8 +183,8 @@ module Base = struct
       ; groupid= Symbol.var "printpr__"
       ; overloads= [ { id= print_n
                      ; ty= Ty.arrow
-                           ~deps:(Ty.dependencies Dependencies.empty)
-                           ~effs:(Ty.effects Effects.empty)
+                           ~effs:no_effs
+                           ~deps:no_deps
                            [x, Ty.number]
                            Ty.void
                      ; impl= Format.asprintf
@@ -183,9 +193,10 @@ module Base = struct
                            Symbol.pp x }
                    ; { id= print_s
                      ; ty= Ty.arrow
-                           ~deps:(Ty.dependencies Dependencies.empty)
-                           ~effs:(Ty.effects Effects.empty)
-                           [x, Ty.string]
+                           ~effs:no_effs
+                           ~deps:no_deps
+                           [ x, Ty.string
+                           ]
                            Ty.void
                      ; impl= Format.asprintf
                            "return { %a: console.log(%a) };"
@@ -256,7 +267,7 @@ module WithDom = struct
     ] [@@ocamlformat "disable"]
 
   let components =
-    let nth_child n pl = Dep.on (Place.result |> Place.slot Slot.children |> Place.offset n) [pl]
+    let nth_child n pl = Dep.on (Place.return |> Place.slot Slot.children |> Place.offset n) [pl]
     and x = Symbol.var "x"
     and y = Symbol.var "y" in
     [ MethodPrim
@@ -265,14 +276,14 @@ module WithDom = struct
         ; overloads= [ { id= div_el_el
                        (* ([x Node] [y Node]) -> Node {result.children[0]^[x], result.children[1]^[y]}#{}*)
                        ; ty= Ty.arrow
-                             ~deps:(Ty.dependencies (Dependencies.of_list [nth_child 0 (Place.baseid x); nth_child 1 (Place.baseid y)]))
-                             ~effs:(Ty.effects Effects.empty)
+                             ~effs:no_effs
+                             ~deps:(Dependencies.to_ty (Dependencies.of_list [nth_child 0 (Place.baseid x); nth_child 1 (Place.baseid y)]))
                              [x, node; y, node]
                              node
                        ; impl= Format.asprintf
                              "let d = document.createElement('div'); \
                               autorun(() => { \
-                                d.replaceChildren([%a, %a]); \
+                                d.replaceChildren(%a, %a); \
                               });\
                               return { \
                               %a: d, \
@@ -288,15 +299,14 @@ module WithDom = struct
                      ; { id= div_el_els
                        (* ([x Node] [y (Array Node)]) -> Node {result.children[0]^[x], result.children[1]^[y]}#{}*)
                        ; ty= Ty.arrow
-                             (* FIXME: there are definitely some deps *)
-                             ~deps:(Ty.dependencies Dependencies.empty)
-                             ~effs:(Ty.effects Effects.empty)
+                             ~effs:no_effs
+                             ~deps:no_deps (* FIXME *)
                              [x, node; y, Ty.array node]
                              node
                        ; impl= Format.asprintf
                              "let d = document.createElement('div'); \
                               autorun(() => { \
-                                d.replaceChildren([%a, ...%a]); \
+                                d.replaceChildren(%a, ...%a); \
                               });\
                               return { \
                               %a: d, \
@@ -308,8 +318,8 @@ module WithDom = struct
                        }
                      ; { id= div_n
                        ; ty= Ty.arrow
-                             ~deps:(Ty.dependencies (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
-                             ~effs:(Ty.effects Effects.empty)
+                             ~effs:no_effs
+                             ~deps:(Dependencies.to_ty (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
                              [x, Ty.number]
                              node
                        ; impl= Format.asprintf
@@ -325,8 +335,8 @@ module WithDom = struct
                              Slot.pp (Place.to_updater_slot (nth_child' 0)) }
                      ; { id= div_s
                        ; ty= Ty.arrow
-                             ~deps:(Ty.dependencies (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
-                             ~effs:(Ty.effects Effects.empty)
+                             ~effs:no_effs
+                             ~deps:(Dependencies.to_ty (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
                              [x, Ty.string]
                              node
                        ; impl= Format.asprintf
@@ -346,15 +356,15 @@ module WithDom = struct
         { name= "button"
         ; groupid= Symbol.var "buttonpr__"
         ; overloads= [ { id= button_s_f
-                       ; ty= (let effty = TyVar.fresh () and depty = TyVar.fresh () in
+                       ; ty= (let r = TyVar.fresh () and e = TyVar.fresh () in
                               (* forall<R,E> ([x String], [y (() -> Void R#E)]) -> Node {result.children[0]^[x]}#{}*)
                               Ty.arrow
-                                ~tyvars:[depty; effty]
-                                ~deps:(Ty.dependencies (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
-                                ~effs:(Ty.effects Effects.empty)
-                                (List.combine
-                                   [x; y]
-                                   [Ty.string; Ty.func ~deps:(VarT depty) ~effs:(VarT effty) [] Ty.void])
+                                ~tyvars:[r; e]
+                                ~effs:no_effs
+                                ~deps:(Dependencies.to_ty (Dependencies.of_list [nth_child 0 (Place.baseid x)]))
+                                [ x, Ty.string
+                                ; y, Ty.func ~deps:(VarT r) ~effs:(VarT e) [] Ty.void
+                                ]
                                 node)
                        ; impl= Format.asprintf
                              "let b = document.createElement('button'); \
@@ -378,19 +388,17 @@ module WithDom = struct
         ; overloads= [ { id= render_el
                        (* (String, Node) -> Void {}#{} *)
                        ; ty= Ty.arrow
-                             ~deps:(Ty.dependencies Dependencies.empty)
-                             ~effs:(Ty.effects Effects.empty)
-                             (List.combine [x; y] [Ty.string; node]) Ty.void
+                             ~effs:no_effs
+                             ~deps:no_deps
+                             [ x, Ty.string
+                             ; y, node
+                             ]
+                             Ty.void
                        ; impl= Format.asprintf
                              " \
-                              document.addEventListener(\"DOMContentLoaded\", \
-                              () => { \
-                              let root = document.getElementById(%a); \
-                              root.appendChild(%a); \
-                              }); \
-                              return { %a: void(0) }; \
+                             document.body.appendChild(%a); \
+                             return { %a: void(0) }; \
                              "
-                             Symbol.pp x
                              Symbol.pp y
                              Slot.pp Slot.return }
                      ]
@@ -404,8 +412,8 @@ module WithDom = struct
                 (* result.value^{t} *)
                 Ty.arrow
                   ~tyvars:[t]
-                  ~deps:(Ty.dependencies (Dependencies.of_list [Dep.on (Place.slot wrap_value_slot Place.result) [Place.baseid x]]))
-                  ~effs:(Ty.effects Effects.empty)
+                  ~effs:no_effs
+                  ~deps:(Dependencies.to_ty (Dependencies.of_list [Dep.on (Place.slot wrap_value_slot Place.return) [Place.baseid x]]))
                   [x, VarT t]
                   (Ty.struct_ [(wrap_value_slot, VarT t)]))
          ; impl= Format.asprintf

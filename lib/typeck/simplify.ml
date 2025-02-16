@@ -5,7 +5,8 @@ open Ant.Util
 
 let ecompose ectx1 ectx2 hole = ectx1 (ectx2 hole)
 
-let rec simplify_ty (ty : Parse.ty) (error : 'e -> expr) (k : Ty.t -> expr) =
+let rec simplify_ty (ty : Parse.ty) (error : Error.t -> program)
+    (k : Ty.t -> program) =
   match ty with
   | Parse.VarT "Bool" ->
       k Ty.bool
@@ -14,7 +15,7 @@ let rec simplify_ty (ty : Parse.ty) (error : 'e -> expr) (k : Ty.t -> expr) =
   | Parse.VarT "String" ->
       k Ty.string
   | Parse.VarT var ->
-      error (`Msg ("TODO: VarT " ^ var))
+      error (Error.msg "TODO: VarT %s" var)
   | Parse.RefT ty ->
       simplify_ty ty error @@ fun ty -> k (Ty.ref ty)
   | Parse.ArrayT ty ->
@@ -62,8 +63,8 @@ and simplify_effs _deps _k = failwith "NYI: effs"
 and simplify_symbol sa sym error k =
   match Alpha.lookup sym sa with Error e -> error e | Ok id -> k id
 
-and simplify_place (sa : Alpha.t) (place : Parse.place) (error : 'e -> expr)
-    (k : Place.t -> expr) : expr =
+and simplify_place (sa : Alpha.t) (place : Parse.place)
+    (error : Error.t -> program) (k : Place.t -> program) : program =
   let rec inner_place pl k =
     match pl with
     | Parse.VarP sym ->
@@ -82,8 +83,8 @@ and simplify_place (sa : Alpha.t) (place : Parse.place) (error : 'e -> expr)
   in
   inner_place place k
 
-and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : 'e -> expr)
-    (k : Symbol.t -> (expr -> expr) -> expr) : expr =
+and simplify_expr (sa : Alpha.t) (expr : Parse.expr) (err : Error.t -> program)
+    (k : Symbol.t -> (expr -> expr) -> program) : program =
   let basic_ectx expr =
     let bound = Symbol.fresh () in
     let ectx hole = LetE {bound; ty= Ty.unknown; expr; body= hole} in
@@ -201,7 +202,8 @@ and simplify_func sa pargs tys body err
   let formals = List.combine args tys in
   simplify_body sa body err @@ fun body -> k formals body
 
-and simplify_def sa (name, expr) err (k : Alpha.t -> (expr -> expr) -> expr) =
+and simplify_def sa (name, expr) err (k : Alpha.t -> (expr -> expr) -> program)
+    =
   Logs.debug (fun m -> m "simplify_def %s" name) ;
   simplify_expr sa expr err
   @@ fun id ectx ->
@@ -213,7 +215,7 @@ and simplify_def sa (name, expr) err (k : Alpha.t -> (expr -> expr) -> expr) =
   k sa ectx
 
 and simplify_defn sa (name, formals, body) err
-    (k : Alpha.t -> (expr -> expr) -> expr) =
+    (k : Alpha.t -> (expr -> expr) -> program) =
   Logs.debug (fun m -> m "simplify_defn %s" name) ;
   let args, tys = List.split formals in
   let groupid, sa = Alpha.lookup_or_insert name sa in
@@ -225,7 +227,7 @@ and simplify_defn sa (name, formals, body) err
   in
   k sa ectx
 
-and simplify_body sa (decls, expr) err (k : expr -> expr) : expr =
+and simplify_body sa (decls, expr) err (k : expr -> program) : program =
   let rec loop sa ectx k = function
     | [] ->
         k sa ectx
@@ -247,8 +249,8 @@ and simplify_body sa (decls, expr) err (k : expr -> expr) : expr =
       k (ectx (PlaceE (Place.baseid id))) )
     decls
 
-let report_error (`Msg str) =
-  Format.eprintf "Type error: %s@." str ;
+let report_error err =
+  Format.eprintf "@[<v 0>%a@]@." Error.pp err ;
   exit 1
 
 let run (prog : Parse.program) : program =

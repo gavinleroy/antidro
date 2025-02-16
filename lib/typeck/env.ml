@@ -12,7 +12,7 @@ module Alpha = struct
   let lookup (key : M.key) (self : t) : (Symbol.t, 'a) result =
     M.find_opt key self
     |> function
-    | Some a -> Ok a | None -> Error (`Msg ("unbound variable: " ^ key))
+    | Some a -> Ok a | None -> Result.error "unbound variable: %s" key
 
   let insert (key : M.key) (sym : Symbol.t) (self : t) : t = M.add key sym self
 
@@ -47,25 +47,23 @@ module Alpha = struct
 end
 
 module Gamma = struct
-  module M = SymbolMap
+  module M = Ty.SymbMap
   module G = Map.Make (Group)
 
   type t = {vars: Ty.t M.t; overloads: Symbol.t list G.t}
-
-  type error = [`Msg of string]
 
   let empty =
     let vars = M.empty and overloads = G.empty in
     {vars; overloads}
 
-  let ty_subst (self : t) : ssubst = self.vars
+  let ty_subst (self : t) : Ty.t Ty.SymbMap.t = self.vars
 
-  let lookup (key : M.key) (self : t) : (Ty.t, error) result =
+  let lookup (key : M.key) (self : t) : (Ty.t, Error.t) result =
     match M.find_opt key self.vars with
     | Some ty ->
         Ok ty
     | None ->
-        Error (`Msg ("unbound variable: " ^ Symbol.show key))
+        Result.error "unbound variable: %a" Symbol.pp key
 
   let insert (key : M.key) (ty : Ty.t) (self : t) : t =
     {self with vars= M.add key ty self.vars}
@@ -75,7 +73,7 @@ module Gamma = struct
 
   let add_method (name : Symbol.t)
       ?(overloadid : Symbol.t = Symbol.derivative name) (ty : Ty.t) (self : t) :
-      (Symbol.t * t, error) result =
+      (Symbol.t * t, Error.t) result =
     let open ResultMonad in
     let gty =
       lookup name self
@@ -114,8 +112,8 @@ module Gamma = struct
 
   let is_primitive (pl : Place.t) : bool =
     Place.get_id_base pl
-    |> Option.map (fun id -> M.find_opt id initial.vars |> Option.is_some)
-    |> Option.value ~default:false
+    |> Result.map (fun id -> M.find_opt id initial.vars |> Option.is_some)
+    |> Result.value ~default:false
 
   let as_single_overload (t : Ty.t) (self : t) : (Symbol.t * Ty.t, 'e) result =
     let open ResultMonad in
@@ -123,12 +121,15 @@ module Gamma = struct
     match methods gid self with
     | [(id, ty)] ->
         return (id, ty)
-    | _ ->
-        error (`Msg "expected single overload")
+    | overloads ->
+        Result.error "expected single overload, found %a"
+          (Format.pp_list ~pp_sep:Format.pp_print_space (fun ppf (id, ty) ->
+               Format.fprintf ppf "%a: %a" Symbol.pp id Ty.pp ty ) )
+          overloads
 end
 
 module Theta = struct
-  module M = TyMap
+  module M = Map.Make (TyVar)
 
   type t = TyCon.t M.t
 

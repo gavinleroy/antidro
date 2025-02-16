@@ -6,8 +6,6 @@ open Sexplib.Std
 module Sexp = Sexplib.Sexp
 open Util
 
-type error = [`Msg of string] [@@deriving sexp_of, show]
-
 module type Identifier = sig
   type t [@@deriving sexp_of, show, eq, ord, hash]
 
@@ -64,11 +62,13 @@ module MetaVar : Identifier = Id
 
 module TyVar : Identifier = Id
 
-module Symbol : Identifier = Id
+module Symbol = struct
+  include Id
+
+  let return = var "result"
+end
 
 module Group : Identifier = Id
-
-module SymbolMap = Map.Make (Symbol)
 
 module Slot : sig
   type t [@@deriving sexp_of, show, eq, ord, hash]
@@ -111,8 +111,7 @@ module Place = struct
   type adjustment = SlotAdj of Slot.t | OffAdj of index
   [@@deriving sexp_of, eq, ord, hash]
 
-  type base = HoleB | ResultB | VarB of Symbol.t
-  [@@deriving sexp_of, eq, ord, hash]
+  type base = HoleB | VarB of Symbol.t [@@deriving sexp_of, eq, ord, hash]
 
   (* NOTE, adjustment are stored in reverse order, *)
   (*  the place `posns[0].x` is represented as *)
@@ -122,8 +121,6 @@ module Place = struct
   let pp_base fmt = function
     | HoleB ->
         Format.pp_print_string fmt "<>"
-    | ResultB ->
-        Format.pp_print_string fmt "result"
     | VarB id ->
         Symbol.pp fmt id
 
@@ -151,34 +148,27 @@ module Place = struct
 
   let hole = (HoleB, [])
 
-  let result = (ResultB, [])
-
   let replace_inner ((b, adjs_inner) : t) ((_, adjs_outer) : t) : t =
     (b, adjs_inner @ adjs_outer)
 
   let is_hole (base, _) = base = HoleB
 
-  let is_return (base, _) = base = ResultB
-
   let get_adjustments (_, adjs) = adjs
 
-  let get_id_base = function VarB id, _ -> Some id | _, _ -> None
+  let get_id_base : t -> (Symbol.t, 'e) result = function
+    | VarB id, _ ->
+        Result.ok id
+    | _, _ ->
+        Result.error "place is not a variable"
 
   let has_id_base id pl =
-    get_id_base pl
-    |> Option.map (Symbol.equal id)
-    |> Option.value ~default:false
+    get_id_base pl |> Result.map (Symbol.equal id) |> Result.is_ok
 
   let plug inner (pl : t) : t =
     if is_hole pl then replace_inner inner pl else pl
 
   let references id (base, _) =
     match base with VarB id' -> id = id' | _ -> false
-
-  let result_to_hole ((base, adjs) : t) =
-    match base with ResultB -> (HoleB, adjs) | _ -> (base, adjs)
-
-  let to_result_base ((_, adjs) : t) : t = (ResultB, adjs)
 
   let swap_id ((f, pl') : Symbol.t * t) (pl : t) : t =
     if has_id_base f pl then replace_inner pl' pl else pl
@@ -199,15 +189,13 @@ module Place = struct
 
   let slotid (sl : Slot.t) (id : Symbol.t) : t = slot sl (baseid id)
 
+  let return = baseid (Symbol.var "result")
+
+  let return_to_hole : t -> t = swap_id (Symbol.return, hole)
+
   let to_string (base, adjs) =
     let base_str =
-      match base with
-      | HoleB ->
-          "hole"
-      | ResultB ->
-          "result"
-      | VarB id ->
-          Symbol.to_string id
+      match base with HoleB -> "hole" | VarB id -> Symbol.to_string id
     in
     let index_str = function
       | LitI n ->
@@ -229,7 +217,7 @@ module Place = struct
   let to_updater_id (pl : t) : Symbol.t = to_string pl |> Symbol.raw
 
   let to_updater_slot (pl : t) : Slot.t =
-    to_string (to_result_base pl) |> Slot.of_string
+    to_string (replace_inner return pl) |> Slot.of_string
 end
 
 module type PlaceToPlaces = sig
@@ -256,7 +244,7 @@ module Dep = struct
 
   let on (pl : Place.t) (pls : Place.t list) : t = (pl, pls)
 
-  let is_result_dep (pl, _) = Place.get_id_base pl |> Option.is_none
+  let is_result_dep (pl, _) = Place.get_id_base pl |> Result.is_error
 
   let is_inner_dep (pl, _) = Place.is_inner pl
 end
@@ -315,7 +303,7 @@ module PlaceMap = struct
 
     val invert : t -> t
 
-    val assert_empty : t -> (unit, error) result
+    val assert_empty : t -> (unit, Error.t) result
 
     val equal : t -> t -> bool
   end = struct
@@ -366,14 +354,362 @@ module PlaceMap = struct
     let adjust (f : Place.t -> Place.t) (m : t) : t =
       M.fold (fun k v -> M.add (f k) (S.map f v)) m M.empty
 
-    let assert_empty (m : t) : (unit, error) result =
+    let assert_empty (m : t) : (unit, Error.t) result =
       if M.is_empty m then Result.ok ()
-      else
-        Result.error
-          (`Msg (Format.asprintf "expected empty set, but got: %a" pp m))
+      else Result.error "expected empty set, but got: %a" pp m
 
     let equal (m1 : t) (m2 : t) : bool = M.equal S.equal m1 m2
   end
+end
+
+type ty =
+  | MetaT of MetaVar.t
+  | VarT of TyVar.t
+  | GroupT of Group.t
+  | SetT of ty list
+  | PlaceT of Place.t
+  | AppT of tycon * ty list
+  | PolyT of TyVar.t list * ty
+[@@deriving sexp_of, show]
+
+and tycon =
+  | VoidC
+  | NumberC
+  | StringC
+  | BoolC
+  (* NOTE, the first argument is the *dependent,* *)
+  (* the remaining n-1 arguments are the *dependencies.* *)
+  (* (inside of a SetT) *)
+  | DepsC
+  (* NOTE, The arguments t1, t2, ..., tn *)
+  (* to an `ArrowC` represent *)
+  (* t_1: dependency set *)
+  (* t_2: effect set *)
+  (* t_3: return name *)
+  (* t_4: return type *)
+  (* t_5 - t_n: forall i. 5 <= i <= n, *)
+  (*            t_i is the argument name, *)
+  (*            t_(i + 1) is the respective type *)
+  | ArrowC
+  | ArrayC
+  | RefC
+  | StructC of Slot.t list
+  | TyFnC of TyVar.t list * ty
+[@@deriving sexp_of, show]
+
+module TySubst : sig
+  type t [@@deriving show]
+
+  val empty : t
+
+  val insert_tv : TyVar.t -> ty -> t -> t
+
+  val insert_id : Symbol.t -> ty -> t -> t
+
+  val lookup : ty -> t -> ty option
+end = struct
+  module TMap = Map.Make (TyVar)
+  module SMap = Map.Make (Symbol)
+
+  type t = ty TMap.t * ty SMap.t
+
+  let pp fmt (tvs, ids) =
+    let fmt_binding kfmt fmt (k, v) =
+      Format.fprintf fmt "%a: %a" kfmt k pp_ty v
+    in
+    Format.fprintf fmt "{@[<hov>%a@]}@.{@[<hov>%a@]}@."
+      (Format.pp_list (fmt_binding TyVar.pp))
+      (TMap.bindings tvs)
+      (Format.pp_list (fmt_binding Symbol.pp))
+      (SMap.bindings ids)
+
+  let show = Format.asprintf "%a" pp
+
+  let empty = (TMap.empty, SMap.empty)
+
+  let insert_tv id ty (tvs, ids) = (TMap.add id ty tvs, ids)
+
+  let insert_id id ty (tvs, ids) = (tvs, SMap.add id ty ids)
+
+  let lookup ty (tvs, ids) =
+    match ty with
+    | VarT id ->
+        TMap.find_opt id tvs
+    | PlaceT pl -> (
+      match Place.get_id_base pl with
+      | Ok id ->
+          SMap.find_opt id ids
+      | Error _ ->
+          None )
+    | _ ->
+        None
+end
+
+module TyCon = struct
+  type t = tycon [@@deriving sexp_of, show]
+end
+
+module Ty = struct
+  module Meta = struct
+    module MTable = Hashtbl.Make (MetaVar)
+
+    let sm : ty MTable.t ref = ref (MTable.create 1000)
+
+    let insert = MTable.add !sm
+
+    let lookup = MTable.find_opt !sm
+
+    let find = MTable.find !sm
+
+    let mem = MTable.mem !sm
+
+    let transaction f =
+      let saved = MTable.copy !sm in
+      let res = f () in
+      sm := saved ;
+      res
+  end
+
+  module SymbMap = Map.Make (Symbol)
+
+  type t = ty [@@deriving sexp_of, show]
+
+  let new_meta () : t = MetaT (MetaVar.fresh ())
+
+  let new_method_group () : t = GroupT (Group.fresh ())
+
+  let unknown = new_meta ()
+
+  let bool = AppT (BoolC, [])
+
+  let number = AppT (NumberC, [])
+
+  let string = AppT (StringC, [])
+
+  let void = AppT (VoidC, [])
+
+  let place (pl : Place.t) : t = PlaceT pl
+
+  let placeid (id : Symbol.t) : t = PlaceT (Place.baseid id)
+
+  let ref (t : t) : t = AppT (RefC, [t])
+
+  let array (t : t) : t = AppT (ArrayC, [t])
+
+  let struct_ (fields : (Slot.t * t) list) : t =
+    let fields, tys = List.split fields in
+    AppT (StructC fields, tys)
+
+  let func ?(deps : t = new_meta ()) ?(effs : t = new_meta ())
+      (formals : (Symbol.t * ty) list) (ret : ty) : ty =
+    let names, tys = List.split formals in
+    let names = List.map (fun id -> PlaceT (Place.baseid id)) names in
+    AppT
+      ( ArrowC
+      , deps :: effs :: PlaceT Place.return :: ret
+        :: List.interleave_exn names tys )
+
+  let arrow ?(tyvars : TyVar.t list = []) ?(deps : t = new_meta ())
+      ?(effs : t = new_meta ()) (formals : (Symbol.t * ty) list) (ret : ty) : ty
+      =
+    PolyT (tyvars, func ~deps ~effs formals ret)
+
+  let dep (t : t) (ts : ty list) : t = AppT (DepsC, [t; SetT ts])
+
+  let as_dep = function
+    | AppT (DepsC, [t; SetT ts]) ->
+        Ok (t, ts)
+    | t ->
+        Result.error "type not a dependency %a" pp t
+
+  let as_ref_inner_ty = function AppT (RefC, [t]) -> Some t | _ -> None
+
+  let is_ref (t : t) = as_ref_inner_ty t |> Option.is_some
+
+  let as_group (t : t) : (Group.t, Error.t) result =
+    match t with
+    | GroupT id ->
+        Result.ok id
+    | _ ->
+        Result.error "expected a group"
+
+  let is_group (t : t) : bool = as_group t |> Result.is_ok
+
+  let as_place : t -> (Place.t, Error.t) result = function
+    | PlaceT pl ->
+        Result.ok pl
+    | _ ->
+        Result.error "not a place"
+
+  let as_place_id (t : t) : (Symbol.t, Error.t) result =
+    as_place t |> Result.bind' Place.get_id_base
+
+  let struct_fields (t : t) : ((Slot.t * t) list, Error.t) result =
+    match t with
+    | AppT (StructC fields, tys) ->
+        List.zip fields tys
+    | _ ->
+        Result.error "expected a struct type, but got: %a" pp t
+
+  let lookup_slot (s : Slot.t) (t : t) : (t, Error.t) result =
+    let open ResultMonad in
+    let* zipped = struct_fields t in
+    match List.find_opt (fun (f, _) -> Slot.equal f s) zipped with
+    | Some (_, ty) ->
+        return ty
+    | None ->
+        Result.error "slot %a not found in type %a" Slot.pp s pp t
+
+  let subst_of tvars tys : TySubst.t =
+    List.fold_right2 TySubst.insert_tv tvars tys TySubst.empty
+
+  let rec subst (s : TySubst.t) (t : t) : t =
+    match TySubst.lookup t s with
+    | Some t' ->
+        t'
+    | None -> (
+      match t with
+      | MetaT a -> (
+          Meta.lookup a |> function Some t -> subst s t | None -> t )
+      | SetT tys ->
+          SetT (List.map (subst s) tys)
+      | AppT (TyFnC (tvars, ty), tys) ->
+          subst_of tvars tys |> fun s' -> subst s ty |> subst s
+      | AppT (tycon, tys) ->
+          AppT (tycon, List.map (subst s) tys)
+      | PolyT (tvars, ty) ->
+          let fresh = List.map (fun _ -> TyVar.fresh ()) tvars in
+          let tys = List.map (fun id -> VarT id) fresh in
+          let s' = subst_of tvars tys in
+          let ty' = subst s' ty in
+          PolyT (fresh, subst s ty')
+      | t ->
+          t )
+
+  let unify_error t u =
+    Result.error "unification failed between:@.%a@.and@.%a" pp t pp u
+
+  let rec unify' (t : t) (u : t) : (unit, Error.t) result =
+    let open ResultMonad in
+    let error () = unify_error t u in
+    match (t, u) with
+    | VarT a, VarT b when a = b ->
+        Result.ok ()
+    | PlaceT pl, PlaceT pl' when Place.equal pl pl' ->
+        Result.ok ()
+    | MetaT a, t -> (
+        Meta.lookup a
+        |> function
+        | Some t' ->
+            unify' t' t
+        | None -> (
+          match t with
+          | AppT (TyFnC _, _) ->
+              unify' (MetaT a) (expand u)
+          | MetaT b when Meta.mem b ->
+              unify' (MetaT a) (Meta.find b)
+          | MetaT b when a = b ->
+              Result.ok ()
+          | _ when not (occurs (MetaT a) t) ->
+              Meta.insert a t |> Result.ok
+          | _ ->
+              error () ) )
+    | t, MetaT a ->
+        unify' (MetaT a) t
+    | SetT tys, SetT uys ->
+        (* FIXME, we're going to run into problems here because the types aren't *ordered* *)
+        List.every2 unify' tys uys
+    | AppT (ArrowC, args), AppT (ArrowC, args')
+      when List.length args = List.length args' ->
+        let argnames = function
+          | _effs :: _deps :: return :: _returnty :: args ->
+              let* names, _ = List.uninterleave args in
+              List.all as_place_id (return :: names)
+          | args ->
+              Result.error "ArrowC incorrect number of arguments %a"
+                (Format.pp_list pp) args
+        in
+        let* argnames' = argnames args' in
+        let* argnames = argnames args in
+        let subst_arg_names =
+          List.fold_right2
+            (fun fid tid -> TySubst.insert_id fid (PlaceT (Place.baseid tid)))
+            argnames' argnames TySubst.empty
+          |> subst
+        in
+        let args' = List.map subst_arg_names args' in
+        List.every2 unify' args args'
+    | AppT (tycon1, args), AppT (tycon2, args') when tycon1 = tycon2 ->
+        List.every2 unify' args args'
+    | AppT (TyFnC (tyvars, u), tys), t ->
+        subst (subst_of tyvars tys) u |> fun u' -> unify' u' t
+    | t, AppT (TyFnC (tyvars, u), tys) ->
+        subst (subst_of tyvars tys) u |> unify' t
+    | PolyT (tyvars, u), PolyT (tyvars', u')
+      when List.length tyvars = List.length tyvars' ->
+        let s' = subst_of tyvars' (List.map (fun id -> VarT id) tyvars) in
+        subst s' u' |> unify' u
+    | _, _ ->
+        error ()
+
+  and unify (t : t) (u : t) : (unit, Error.t) result =
+    try unify' t u with Invalid_argument _ -> unify_error t u
+
+  and expand (t : t) : t =
+    match t with
+    | AppT (TyFnC (tvars, u), tys) ->
+        subst (subst_of tvars tys) u |> expand
+    | MetaT a when Meta.mem a ->
+        expand (Meta.find a)
+    | t ->
+        t
+
+  and occurs (u : t) (t : t) : bool =
+    match t with
+    | MetaT a ->
+        Meta.lookup a
+        |> Option.map (fun t' -> occurs u t')
+        |> Option.value ~default:false
+    | SetT tys | AppT (_, tys) ->
+        List.exists (occurs u) tys
+    | PolyT (_, k) ->
+        occurs u k
+    | q when q = u ->
+        true
+    | _ ->
+        false
+
+  let rec meta_vars_in (t : t) : MetaVar.t list =
+    match t with
+    | MetaT m ->
+        [m]
+    | SetT ts | AppT (_, ts) ->
+        List.concat_map meta_vars_in ts
+    | PolyT (_, t) ->
+        meta_vars_in t
+    | _ ->
+        []
+
+  let generalize (s : t SymbMap.t) (t : t) : t =
+    let t_0 = subst TySubst.empty t in
+    let metas =
+      meta_vars_in t_0
+      |> List.filter (fun v ->
+             not (SymbMap.exists (fun _ t' -> occurs (MetaT v) t') s) )
+    in
+    let tyvars = List.map (fun _ -> TyVar.fresh ()) metas in
+    List.iter2 (fun m tv -> Meta.insert m (VarT tv)) metas tyvars ;
+    let t = PolyT (tyvars, t_0) in
+    Logs.debug (fun m -> m "generalized %a to: %a" pp t_0 pp t) ;
+    t
+
+  let instantiate (t : t) : t =
+    match t with
+    | PolyT (tvars, t) ->
+        let mvars = List.map (fun _ -> new_meta ()) tvars in
+        subst (subst_of tvars mvars) t
+    | _ ->
+        t
 end
 
 module Dependencies = struct
@@ -398,6 +734,29 @@ module Dependencies = struct
         s PlaceMap.S.empty
     in
     PlaceMap.M.map purge_set t
+
+  let of_ty : Ty.t -> (t, Error.t) result = function
+    | SetT tys ->
+        (* FIXME: not handled, type variables *)
+        (* E.g., `forall<R> R`, `forall<R> { result^R }`, ... *)
+        let open ResultMonad in
+        let* as_deps = List.all Ty.as_dep tys in
+        let+ deps =
+          List.all
+            (fun (t, ts) ->
+              let* pl = Ty.as_place t in
+              let+ pls = List.all Ty.as_place ts in
+              Dep.on pl pls )
+            as_deps
+        in
+        of_list deps
+    | t ->
+        Result.error "TODO: convert ty to dependencies %a" Ty.pp t
+
+  let to_ty (ls : t) =
+    to_list ls |> List.map Dep.destructure
+    |> List.map (fun (pl, pls) -> Ty.dep (Ty.place pl) (List.map Ty.place pls))
+    |> fun tys -> SetT tys
 end
 
 module Effects = struct
@@ -416,332 +775,15 @@ module Effects = struct
 
   let remove (id : Symbol.t) (m : t) : t =
     PlaceMap.M.filter (fun pl _ -> not (Place.references id pl)) m
-end
 
-type ty =
-  | MetaT of MetaVar.t
-  | VarT of TyVar.t
-  | DepsT of Dependencies.t
-  | EffsT of Effects.t
-  | GroupT of Group.t
-  | AppT of tycon * ty list
-  | PolyT of TyVar.t list * ty
-[@@deriving sexp_of, show]
+  let of_ty (ty : Ty.t) : (t, Error.t) result =
+    (* FIXME TODO *)
+    ignore ty ;
+    Result.error "TODO: effs_of_ty"
 
-and tycon =
-  | VoidC
-  | NumberC
-  | StringC
-  | BoolC
-  (* NOTE: The arguments t1, t2, ..., tn *)
-  (* to an ArrowC asr *)
-  (* t1: dependency set *)
-  (* t2: effect set *)
-  (* t3: return value *)
-  (* t4-tn: arguments *)
-  | ArrowC of Symbol.t list
-  | ArrayC
-  | RefC
-  | StructC of Slot.t list
-  | TyFnC of TyVar.t list * ty
-[@@deriving sexp_of, show]
-
-module SymbMap = Map.Make (Symbol)
-module TyMap = Map.Make (TyVar)
-
-type idsubst = Symbol.t SymbMap.t
-
-type ssubst = ty SymbMap.t
-
-type tysubst = ty TyMap.t
-
-module TyCon = struct
-  type t = tycon [@@deriving sexp_of, show]
-end
-
-module Ty = struct
-  module TMap = Map.Make (TyVar)
-
-  type t = ty [@@deriving sexp_of, show]
-
-  let new_meta () : t = MetaT (MetaVar.fresh ())
-
-  let new_method_group () : t = GroupT (Group.fresh ())
-
-  module Meta = struct
-    module MTable = Hashtbl.Make (MetaVar)
-
-    let sm : ty MTable.t ref = ref (MTable.create 1000)
-
-    let insert v = MTable.add !sm v
-
-    let lookup v = MTable.find_opt !sm v
-
-    let find v = MTable.find !sm v
-
-    let mem v = MTable.mem !sm v
-
-    let transaction f =
-      let saved = MTable.copy !sm in
-      let res = f () in
-      sm := saved ;
-      res
-  end
-
-  let unknown = new_meta ()
-
-  let bool = AppT (BoolC, [])
-
-  let number = AppT (NumberC, [])
-
-  let string = AppT (StringC, [])
-
-  let void = AppT (VoidC, [])
-
-  let ref (t : t) : t = AppT (RefC, [t])
-
-  let ref_inner_ty = function AppT (RefC, [t]) -> Some t | _ -> None
-
-  let array (t : t) : t = AppT (ArrayC, [t])
-
-  let struct_ (fields : (Slot.t * t) list) : t =
-    let fields, tys = List.split fields in
-    AppT (StructC fields, tys)
-
-  let func ?(deps : t = new_meta ()) ?(effs : t = new_meta ())
-      (formals : (Symbol.t * ty) list) (ret : ty) : ty =
-    let names, tys = List.split formals in
-    let tys = deps :: effs :: ret :: tys in
-    AppT (ArrowC names, tys)
-
-  let arrow ?(tyvars : TyVar.t list = []) ?(deps : t = new_meta ())
-      ?(effs : t = new_meta ()) (formals : (Symbol.t * ty) list) (ret : ty) : ty
-      =
-    PolyT (tyvars, func ~deps ~effs formals ret)
-
-  let dependencies (ls : Dependencies.t) = DepsT ls
-
-  let effects (ls : Effects.t) = EffsT ls
-
-  let is_ref = function AppT (RefC, _) -> true | _ -> false
-
-  let as_group (t : t) : (Group.t, error) result =
-    match t with
-    | GroupT id ->
-        Result.ok id
-    | _ ->
-        Result.error (`Msg "expected a group")
-
-  let is_group (t : t) : bool = as_group t |> Result.is_ok
-
-  let as_deps (t : t) : (Dependencies.t, error) result =
-    match t with
-    | DepsT d ->
-        Result.ok d
-    | _ ->
-        Result.error
-          (`Msg (Format.asprintf "expected a dependencies set but got: %a" pp t))
-
-  let as_effs (t : t) : (Effects.t, error) result =
-    match t with
-    | EffsT e ->
-        Result.ok e
-    | _ ->
-        Result.error
-          (`Msg (Format.asprintf "expected an effects set but got: %a" pp t))
-
-  let struct_fields (t : t) : ((Slot.t * t) list, error) result =
-    match t with
-    | AppT (StructC fields, tys) ->
-        List.zip fields tys
-    | _ ->
-        Result.error
-          (`Msg (Format.asprintf "expected a struct type, but got: %a" pp t))
-
-  let lookup_slot (s : Slot.t) (t : t) : (t, error) result =
-    let open ResultMonad in
-    let* zipped = struct_fields t in
-    match List.find_opt (fun (f, _) -> Slot.equal f s) zipped with
-    | Some (_, ty) ->
-        return ty
-    | None ->
-        error
-          (`Msg (Format.asprintf "slot %a not found in type %a" Slot.pp s pp t))
-
-  let subst_of tvars tys : tysubst = List.combine tvars tys |> TMap.of_list
-
-  let subst_of' ids ids' : idsubst = List.combine ids ids' |> SymbMap.of_list
-
-  let rec subst (s : tysubst) (t : t) =
-    match t with
-    | VarT id ->
-        TMap.find_opt id s |> Option.value ~default:t
-    | MetaT a -> (
-        Meta.lookup a |> function Some t -> subst s t | None -> t )
-    | AppT (TyFnC (tvars, ty), tys) ->
-        subst_of tvars tys |> fun s' -> subst s ty |> subst s
-    | AppT (tycon, tys) ->
-        AppT (tycon, List.map (subst s) tys)
-    | PolyT (tvars, ty) ->
-        let fresh = List.map (fun _ -> TyVar.fresh ()) tvars in
-        let tys = List.map (fun id -> VarT id) fresh in
-        let s' = subst_of tvars tys in
-        let ty' = subst s' ty in
-        PolyT (fresh, subst s ty')
-    | t ->
-        t
-
-  let rec subst' (s : idsubst) (t : t) =
-    match t with
-    | PolyT (tvars, ty) ->
-        PolyT (tvars, subst' s ty)
-    | AppT (ArrowC ids, args) ->
-        let fresh = List.map Symbol.derivative ids in
-        let s' = subst_of' ids fresh in
-        let args = List.map (subst' s') args |> List.map (subst' s) in
-        AppT (ArrowC ids, args)
-    | AppT (tycon, tys) ->
-        AppT (tycon, List.map (subst' s) tys)
-    | DepsT deps ->
-        Dependencies.adjust
-          (fun pl ->
-            match Place.get_id_base pl with
-            | None ->
-                pl
-            | Some id ->
-                let id' = SymbMap.find_opt id s |> Option.value ~default:id in
-                Place.swap_id (id, Place.baseid id') pl )
-          deps
-        |> fun t -> DepsT t
-    | EffsT effs ->
-        Effects.adjust
-          (fun pl ->
-            match Place.get_id_base pl with
-            | None ->
-                pl
-            | Some id ->
-                let id' = SymbMap.find_opt id s |> Option.value ~default:id in
-                Place.swap_id (id, Place.baseid id') pl )
-          effs
-        |> fun t -> EffsT t
-    | t ->
-        t
-
-  let unify_error t u =
-    Result.error
-      (`Msg
-        (Format.asprintf "unification failed between:@\n%a@\nand@\n%a" pp t pp u)
-        )
-
-  let rec unify' (t : t) (u : t) : (unit, error) result =
-    let error () = unify_error t u in
-    match (t, u) with
-    | VarT a, VarT b when a = b ->
-        Result.ok ()
-    | MetaT a, t -> (
-        Meta.lookup a
-        |> function
-        | Some t' ->
-            unify' t' t
-        | None -> (
-          match t with
-          | AppT (TyFnC _, _) ->
-              unify' (MetaT a) (expand u)
-          | MetaT b when Meta.mem b ->
-              unify' (MetaT a) (Meta.find b)
-          | MetaT b when a = b ->
-              Result.ok ()
-          | _ when not (occurs (MetaT a) t) ->
-              Meta.insert a t |> Result.ok
-          | _ ->
-              error () ) )
-    | t, MetaT a ->
-        unify' (MetaT a) t
-    | AppT (ArrowC ids, args), AppT (ArrowC ids', args')
-      when List.length ids = List.length ids' ->
-        (* substitute ids' for ids within args', then unify' everything *)
-        let s = subst_of' ids' ids in
-        let args' = List.map (subst' s) args' in
-        List.fold_left2
-          (fun acc ty1 ty2 -> Result.bind acc (fun () -> unify' ty1 ty2))
-          (Result.ok ()) args args'
-    | AppT (tycon1, tys1), AppT (tycon2, tys2) when tycon1 = tycon2 ->
-        List.fold_left2
-          (fun acc ty1 ty2 -> Result.bind acc (fun () -> unify' ty1 ty2))
-          (Result.ok ()) tys1 tys2
-    | AppT (TyFnC (tyvars, u), tys), t ->
-        subst (subst_of tyvars tys) u |> fun u' -> unify' u' t
-    | t, AppT (TyFnC (tyvars, u), tys) ->
-        subst (subst_of tyvars tys) u |> unify' t
-    | PolyT (tyvars, u), PolyT (tyvars', u') ->
-        let s' = subst_of tyvars' (List.map (fun id -> VarT id) tyvars) in
-        subst s' u' |> unify' u
-    | DepsT d1, DepsT d2 when Dependencies.equal d1 d2 ->
-        Result.ok ()
-    | EffsT e1, EffsT e2 when Effects.equal e1 e2 ->
-        Result.ok ()
-    | _ ->
-        error ()
-
-  and unify (t : t) (u : t) : (unit, error) result =
-    try unify' t u with Invalid_argument _ -> unify_error t u
-
-  and expand (t : t) : t =
-    match t with
-    | AppT (TyFnC (tvars, u), tys) ->
-        subst (subst_of tvars tys) u |> expand
-    | MetaT a when Meta.mem a ->
-        expand (Meta.find a)
-    | t ->
-        t
-
-  and occurs (u : t) (t : t) : bool =
-    match t with
-    | MetaT a ->
-        Meta.lookup a
-        |> Option.map (fun t' -> occurs u t')
-        |> Option.value ~default:false
-    | AppT (_, tys) ->
-        List.exists (occurs u) tys
-    | PolyT (_, k) ->
-        occurs u k
-    | q when q = u ->
-        true
-    | _ ->
-        false
-
-  let rec meta_vars_in (t : t) : MetaVar.t list =
-    match t with
-    | MetaT m ->
-        [m]
-    | AppT (_, ts) ->
-        List.concat_map meta_vars_in ts
-    | PolyT (_, t) ->
-        meta_vars_in t
-    | _ ->
-        []
-
-  let generalize (s : ssubst) (t : t) : t =
-    let t = subst TyMap.empty t in
-    Logs.debug (fun m -> m "generalizing %a" pp t) ;
-    let metas =
-      meta_vars_in t
-      |> List.filter (fun v ->
-             not (SymbMap.exists (fun _ t' -> occurs (MetaT v) t') s) )
-    in
-    let tyvars = List.map (fun _ -> TyVar.fresh ()) metas in
-    List.iter2 (fun m tv -> Meta.insert m (VarT tv)) metas tyvars ;
-    let t = PolyT (tyvars, t) in
-    Logs.debug (fun m -> m "generalized to: %a" pp t) ;
-    t
-
-  let instantiate (t : t) : t =
-    match t with
-    | PolyT (tvars, t) ->
-        let mvars = List.map (fun _ -> new_meta ()) tvars in
-        subst (subst_of tvars mvars) t
-    | _ ->
-        t
+  let to_ty (ls : t) =
+    (* FIXME TODO *)
+    ignore ls ; SetT []
 end
 
 module Signature = struct
@@ -754,38 +796,48 @@ module Signature = struct
     ; deps: ty
     ; effs: ty
     ; return: ty }
-  [@@deriving sexp_of, show]
+  [@@deriving sexp_of]
+
+  let pp fmt {tyvars; ids; args; deps; effs; return} =
+    let pp_args =
+      Format.pp_list (fun fmt (id, ty) ->
+          Format.fprintf fmt "%a: %a" Symbol.pp id Ty.pp ty )
+    in
+    Format.fprintf fmt "(%a) -> %a | {TODO}" pp_args (List.combine ids args)
+      Ty.pp return
+
+  let show = Format.asprintf "%a" pp
 
   let formals s = List.combine s.ids s.args
 
-  let from_ty : ty -> (t, 'e) result = function
-    | PolyT (tyvars, AppT (ArrowC ids, deps :: effs :: return :: args)) ->
-        if not (List.is_empty tyvars) then
-          Logs.err (fun m ->
-              m "tyvars are not empty %a" (Format.pp_list TyVar.pp) tyvars ) ;
-        Result.ok {tyvars; ids; args; deps; effs; return}
-    | t ->
-        Result.error
-          (`Msg
-            ( "expected a polymorphic function, but got: "
-            ^ Sexp.to_string_hum (sexp_of_ty t) ) )
-
   let from_instantiated : ty -> (t, 'e) result = function
-    | AppT (ArrowC ids, deps :: effs :: return :: args) ->
-        Result.ok {tyvars= []; ids; args; deps; effs; return}
+    | AppT (ArrowC, deps :: effs :: _return :: return :: args) ->
+        let* names, args = List.uninterleave args in
+        let+ ids =
+          List.all
+            (fun ty -> Ty.as_place ty |> Result.bind' Place.get_id_base)
+            names
+        in
+        {tyvars= []; ids; args; deps; effs; return}
     | t ->
-        Result.error
-          (`Msg
-            ( "expected an instantiated function, but got: "
-            ^ Sexp.to_string_hum (sexp_of_ty t) ) )
+        Result.error "expected an instantiated function, but got: %a" Ty.pp t
+
+  let from_ty : ty -> (t, 'e) result = function
+    | PolyT (tyvars, app) ->
+        let+ inst = from_instantiated app in
+        {inst with tyvars}
+    | t ->
+        Result.error "expected a polymorphic function, but got: %a" Ty.pp t
 
   let to_ty ({tyvars; ids; args; deps; effs; return} : t) : ty =
-    PolyT (tyvars, AppT (ArrowC ids, deps :: effs :: return :: args))
+    let args = List.interleave_exn (List.map Ty.placeid ids) args in
+    PolyT
+      ( tyvars
+      , AppT (ArrowC, deps :: effs :: PlaceT Place.return :: return :: args) )
 
   let is t = from_ty t |> Result.is_ok
 
-  let uninstantiated_deps self : Dependencies.t option =
-    match self.deps with DepsT deps -> Some deps | _ -> None
+  let uninstantiated_deps self : Dependencies.t option = failwith "TODO"
 
   let return (ty : ty) : (ty, 'e) result =
     let+ {return; _} = from_instantiated ty in
@@ -798,16 +850,16 @@ module Signature = struct
   let dependencies (args : Place.t list) (ty : ty) : (Dependencies.t, 'e) result
       =
     let* {ids; deps; _} = from_instantiated ty in
-    let* deps = Ty.as_deps deps in
+    let* deps = Dependencies.of_ty deps in
     let+ map = List.zip ids args in
     let deps_after =
       List.fold_right
         (fun swap -> Dependencies.adjust (Place.swap_id swap))
         map deps
-      |> Dependencies.adjust_lhs Place.result_to_hole
+      |> Dependencies.adjust_lhs Place.return_to_hole
     in
     Logs.debug (fun m ->
-        m "instantiating-dependencies@\nmap: %a@\nbefore:@\n%a@\nafter:@\n%a"
+        m "instantiating-dependencies@.map: %a@.before:@.%a@.after:@.%a"
           (Format.pp_list (fun fmt (id, pl) ->
                Format.fprintf fmt "%a: %a" Symbol.pp id Place.pp pl ) )
           map Dependencies.pp deps Dependencies.pp deps_after ) ;
@@ -815,7 +867,7 @@ module Signature = struct
 
   let effects (args : Place.t list) (ty : ty) : (Effects.t, 'e) result =
     let* {ids; effs; _} = from_instantiated ty in
-    let* effs = Ty.as_effs effs in
+    let* effs = Effects.of_ty effs in
     Logs.debug (fun m ->
         m "instantiating-effects with (effs: %a) (args: %a)" Effects.pp effs
           (Format.pp_list Place.pp) args ) ;
@@ -835,10 +887,10 @@ module Signature = struct
 
   (* Resolve the specific method overload from the MethodGroup in `fty` *)
   let resolve_application (overloads : (Symbol.t * Ty.t) list)
-      (argstys : Ty.t list) : (Symbol.t * Ty.t, error) result =
+      (argstys : Ty.t list) : (Symbol.t * Ty.t, Error.t) result =
     let open Util.ResultMonad in
     Logs.debug (fun m ->
-        m "Resolving application of args@\n@[%a@]@\nwith overloads@\n@[%a@]\n"
+        m "Resolving application of args@.@[%a@]@.with overloads@.@[%a@]\n"
           (Format.pp_list Ty.pp) argstys
           ( Format.pp_list ~pp_sep:Format.pp_print_newline
           @@ fun fmt (id, fty) ->
@@ -851,7 +903,7 @@ module Signature = struct
       let* args = List.zip ids argstys in
       let msig = Ty.func args mret in
       Logs.debug (fun m ->
-          m "checking overload with signature@\n@[%a@]@\n@[%a@]" Ty.pp fty Ty.pp
+          m "checking overload with signature@.@[%a@]@.@[%a@]" Ty.pp fty Ty.pp
             msig ) ;
       Ty.unify fty msig
     in
@@ -861,9 +913,9 @@ module Signature = struct
     in
     match List.filter is_applicable_overload overloads with
     | [] ->
-        error (`Msg "no matching overload")
+        Result.error "no matching overload"
     | [(id, fty)] ->
         return (id, fty |> Ty.instantiate)
     | _ ->
-        error (`Msg "Ambiguous application, multiple matching overloads")
+        Result.error "Ambiguous application, multiple matching overloads"
 end

@@ -1,8 +1,7 @@
 open Ant.Ty
+open Ant.Util
 open Air.Lang
 open Format
-
-let pp_comma fmt () = fprintf fmt ",@ "
 
 let emit_place = Place.pp
 

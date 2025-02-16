@@ -9,7 +9,7 @@ let does_parse filename () =
 let typeck_suite =
   Utils.get_files_with_extension "simple" "ant"
   |> List.map (fun fname ->
-         let test_name = Printf.sprintf "parse-%s" fname in
+         let test_name = Printf.sprintf "typeck-%s" fname in
          (test_name, `Quick, does_parse fname) )
 
 let () = Alcotest.run "Antidro_typeck" [("Typing", typeck_suite)]

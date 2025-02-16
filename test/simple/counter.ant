@@ -6,4 +6,4 @@
     (button 'Click' incr)
     (div (! counter))))
 
-(render-into 'root' (app))
+(render 'root' (app))

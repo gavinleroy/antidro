@@ -6,8 +6,6 @@ module ResultMonad = struct
   let ( let+ ) m f = Result.map f m
 
   let return = Result.ok
-
-  let error = Result.error
 end
 
 module OptionMonad = struct
@@ -20,17 +18,44 @@ module OptionMonad = struct
   let error = Option.none
 end
 
+module Error : sig
+  type t
+
+  val of_string : string -> t
+
+  val msg : ('a, Format.formatter, unit, unit, unit, t) format6 -> 'a
+
+  val pp : Format.formatter -> t -> unit
+end = struct
+  open Sexplib.Std
+
+  type t = [`Msg of string] [@@deriving sexp_of, show]
+
+  let of_string s = `Msg s
+
+  let msg fmt = Format.kasprintf of_string fmt
+
+  let pp fmt = function `Msg s -> Format.fprintf fmt "%s" s
+end
+
 module Format = struct
   include Format
 
-  let pp_list ?(pp_sep = fun ppf () -> pp_print_string ppf ", ") fmt ppf ls =
-    pp_print_list ~pp_sep fmt ppf ls
+  let pp_comma fmt () = fprintf fmt ",@ "
+
+  let pp_list ?(pp_sep = pp_comma) fmt ppf ls = pp_print_list ~pp_sep fmt ppf ls
 end
 
 module Result = struct
   include Result
 
-  let unwrap = function Ok x -> x | Error (`Msg s) -> failwith s
+  let bind' f x = bind x f
+
+  let unwrap = function Ok x -> x | Error _ -> assert false
+
+  let value ~default = function Ok x -> x | Error _ -> default
+
+  let error fmt = Format.kasprintf (fun s -> Error (Error.of_string s)) fmt
 end
 
 module List = struct
@@ -66,7 +91,7 @@ module List = struct
       | [], [] ->
           Result.ok (List.rev acc)
       | [], _ | _, [] ->
-          Result.error (`Msg "Lists have different lengths")
+          Result.error "Lists have different lengths"
       | x :: xs, y :: ys ->
           loop xs ys ((x, y) :: acc)
     in
@@ -85,6 +110,18 @@ module List = struct
         x :: acc )
       (return []) ls
     |> Result.map List.rev
+
+  let every (f : 'a -> (unit, 'e) result) (ls : 'a list) : (unit, 'e) result =
+    let open ResultMonad in
+    let+ _ = all f ls in
+    ()
+
+  let every2 (f : 'a -> 'b -> (unit, 'e) result) (ls : 'a list) (ks : 'b list) :
+      (unit, 'e) result =
+    let open ResultMonad in
+    let* zipped = zip ls ks in
+    let+ _ = all (fun (a, b) -> f a b) zipped in
+    ()
 
   let all2 (f : 'a -> 'b -> ('c, 'e) result) (ls : 'a list) (ks : 'b list) :
       ('c list, 'e) result =
@@ -110,4 +147,30 @@ module List = struct
         ls
     in
     (List.rev ls, acc)
+
+  let interleave (l1 : 'a list) (l2 : 'a list) : ('a list, 'e) result =
+    let rec loop acc l1 l2 =
+      match (l1, l2) with
+      | [], [] ->
+          Result.ok (List.rev acc)
+      | [], _ | _, [] ->
+          Result.error "Lists have different lengths"
+      | x :: xs, y :: ys ->
+          loop (y :: x :: acc) xs ys
+    in
+    loop [] l1 l2
+
+  let interleave_exn l1 l2 = interleave l1 l2 |> Result.unwrap
+
+  let uninterleave (ls : 'a list) : ('a list * 'a list, 'e) result =
+    let rec loop acc1 acc2 ls =
+      match ls with
+      | [] ->
+          Result.ok (List.rev acc1, List.rev acc2)
+      | _x :: [] ->
+          Result.error "List has odd length"
+      | x :: y :: ls ->
+          loop (x :: acc1) (y :: acc2) ls
+    in
+    loop [] [] ls
 end
